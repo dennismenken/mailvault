@@ -43,15 +43,20 @@ run_account_migrations() {
     fi
 }
 
-# Function to generate Prisma client
-generate_prisma_client() {
-    echo "🔄 Generating Prisma client..."
+# Function to check Prisma client
+check_prisma_client() {
+    echo "🔍 Checking Prisma client..."
     
-    if npx prisma generate; then
-        echo "✅ Prisma client generated"
+    if [ -d "/app/src/generated/prisma" ]; then
+        echo "✅ Prisma client found"
     else
-        echo "❌ Prisma client generation failed"
-        exit 1
+        echo "⚠️ Prisma client not found, generating..."
+        if npx prisma generate; then
+            echo "✅ Prisma client generated"
+        else
+            echo "❌ Prisma client generation failed"
+            exit 1
+        fi
     fi
 }
 
@@ -62,8 +67,8 @@ main() {
     # Wait for mounted volumes
     wait_for_database
     
-    # Generate Prisma client (in case it's missing)
-    generate_prisma_client
+    # Check Prisma client (only generate if missing)
+    check_prisma_client
     
     # Run migrations
     run_main_migrations
