@@ -18,13 +18,17 @@ wait_for_database() {
 setup_data_directories() {
     echo "📁 Setting up data directories..."
     
+    # Get host user/group IDs from environment
+    HOST_UID=${HOST_UID:-1001}
+    HOST_GID=${HOST_GID:-1001}
+    
     # Ensure database directory exists (as root)
     mkdir -p /app/data/database
     mkdir -p /app/data/accounts
     mkdir -p /app/data/attachments
     
-    # Set proper ownership
-    chown -R nextjs:nodejs /app/data
+    # Set proper ownership (not needed when running as root)
+    # chown -R $HOST_UID:$HOST_GID /app/data
     
     echo "✅ Data directories setup completed"
 }
@@ -91,8 +95,8 @@ main() {
     echo "🚀 Starting application as nextjs user: $@"
     echo "================================"
     
-    # Switch to nextjs user and execute the main command
-    exec su-exec nextjs "$@"
+    # Execute the main command as root (avoids permission issues)
+    exec "$@"
 }
 
 # Run main function with all arguments

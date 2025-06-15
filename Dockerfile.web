@@ -65,7 +65,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 RUN mkdir -p /app/data /app/logs
 RUN chown -R nextjs:nodejs /app/data /app/logs /app/src
 
-# Don't switch to nextjs user yet - entrypoint needs root permissions
+# Run as root to avoid permission issues with mounted volumes
 
 EXPOSE 3000
 
