@@ -28,6 +28,13 @@ COPY src/lib ./src/lib
 COPY prisma ./prisma
 COPY package.json ./
 
+# Copy scripts for migrations
+COPY scripts ./scripts
+
+# Copy entrypoint script
+COPY scripts/docker-entrypoint-sync.sh /usr/local/bin/docker-entrypoint-sync.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint-sync.sh
+
 # Generate Prisma client
 RUN npx prisma generate
 
@@ -37,5 +44,6 @@ RUN chown -R mailsync:mailsync /app/data /app/logs
 
 USER mailsync
 
-# Run the background sync service
+# Use entrypoint for setup
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-sync.sh"]
 CMD ["node", "src/services/start-background-sync.js"] 

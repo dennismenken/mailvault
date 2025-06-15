@@ -5,10 +5,11 @@ This guide explains how to deploy Mail Vault using Docker Compose with separate 
 ## Architecture
 
 The Docker Compose setup includes:
-- **Web Service**: Next.js application (port 3000)
+- **Web Service**: Next.js application (port 3000) with automatic migrations
 - **Sync Service**: IMAP background synchronization
 - **Shared Volumes**: Data persistence and attachments storage
 - **Network**: Internal communication between services
+- **Auto-Migration**: Automatic database setup on first run
 
 ## Quick Start
 
@@ -37,10 +38,10 @@ NEXTAUTH_URL=http://localhost:3000
 ### 3. Build and Start
 
 ```bash
-# Build and start all services
+# Build and start all services (migrations run automatically)
 docker-compose up -d
 
-# View logs
+# View logs to see migration progress
 docker-compose logs -f
 
 # View only web service logs
@@ -60,6 +61,56 @@ docker-compose exec web node scripts/cli.js create-initial-user
 ### 5. Access the Application
 
 Open your browser: http://localhost:3000
+
+## Automatic Migration System
+
+### How It Works
+
+**Web Service (Dockerfile.web)**:
+- Runs `docker-entrypoint.sh` on startup
+- Automatically executes `npx prisma migrate deploy`
+- Runs account database migrations
+- Then starts the Next.js application
+
+**Sync Service (Dockerfile.sync)**:
+- Runs `docker-entrypoint-sync.sh` on startup
+- Waits for main database to be ready
+- Generates Prisma client
+- Then starts the background sync service
+
+### Migration Logs
+
+You can monitor the migration process:
+```bash
+# Watch migration progress
+docker-compose logs -f web | grep -E "(🔄|✅|❌)"
+
+# Example output:
+# 🚀 Mail Vault Docker Entrypoint
+# 📁 Waiting for data directory to be mounted...
+# ✅ Data directory found
+# 🔄 Generating Prisma client...
+# ✅ Prisma client generated
+# 🔄 Running main database migrations...
+# ✅ Main database migrations completed
+# 🔄 Running account database migrations...
+# ✅ Account database migrations completed
+# 🚀 Starting application: node server.js
+```
+
+### Manual Migration (if needed)
+
+If automatic migrations fail, you can run them manually:
+```bash
+# Main database migrations
+docker-compose exec web npx prisma migrate deploy
+
+# Account database migrations
+docker-compose exec web node scripts/migrate-account-databases.js
+
+# Restart services after manual migration
+docker-compose restart
+```
 
 ## Data Persistence
 
@@ -91,7 +142,7 @@ docker-compose up -d
 ### Start/Stop Services
 
 ```bash
-# Start all services
+# Start all services (with automatic migrations)
 docker-compose up -d
 
 # Stop all services
@@ -141,6 +192,9 @@ docker-compose logs -f sync
 
 # Last 100 lines
 docker-compose logs --tail=100
+
+# Filter migration logs
+docker-compose logs web | grep -E "(🔄|✅|❌)"
 ```
 
 ### Resource Usage
@@ -200,7 +254,20 @@ docker-compose down
 docker-compose up -d
 ```
 
-**3. Sync Not Working**
+**3. Migration Failures**
+```bash
+# Check migration logs
+docker-compose logs web | grep -E "(🔄|✅|❌)"
+
+# Run migrations manually
+docker-compose exec web npx prisma migrate deploy
+docker-compose exec web node scripts/migrate-account-databases.js
+
+# Restart services
+docker-compose restart
+```
+
+**4. Sync Not Working**
 ```bash
 # Check sync service logs
 docker-compose logs sync
@@ -209,7 +276,7 @@ docker-compose logs sync
 docker-compose restart sync
 ```
 
-**4. Port Already in Use**
+**5. Port Already in Use**
 ```bash
 # Change port in compose.yaml
 ports:
@@ -240,19 +307,32 @@ docker-compose exec sync node src/services/sync.js
 # Pull latest code
 git pull
 
-# Rebuild and deploy
+# Rebuild and deploy (migrations run automatically)
 docker-compose down
 docker-compose build --no-cache
 docker-compose up -d
+
+# Monitor migration progress
+docker-compose logs -f web | grep -E "(🔄|✅|❌)"
 ```
 
-### Database Migrations
+### Database Schema Changes
 
-```bash
-# Run migrations if needed
-docker-compose exec web npx prisma migrate deploy
-docker-compose exec web node scripts/migrate-account-databases.js
-```
+When updating to a new version with schema changes:
+
+1. **Automatic** (recommended):
+   ```bash
+   # Just restart - migrations run automatically
+   docker-compose down
+   docker-compose up -d
+   ```
+
+2. **Manual** (if automatic fails):
+   ```bash
+   # Run migrations manually
+   docker-compose exec web npx prisma migrate deploy
+   docker-compose exec web node scripts/migrate-account-databases.js
+   ```
 
 ## Security
 
@@ -316,4 +396,22 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+```
+
+### Disable Automatic Migrations
+
+If you prefer manual control over migrations:
+
+```yaml
+# In compose.yaml, override the entrypoint:
+services:
+  web:
+    entrypoint: []
+    command: ["node", "server.js"]
+```
+
+Then run migrations manually:
+```bash
+docker-compose exec web npx prisma migrate deploy
+docker-compose exec web node scripts/migrate-account-databases.js
 ``` 
