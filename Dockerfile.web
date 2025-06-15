@@ -43,9 +43,10 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Copy Prisma files
+# Copy Prisma files and generated client
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/src/generated ./src/generated
 
 # Copy package.json for scripts
 COPY --from=builder /app/package.json ./package.json
@@ -57,9 +58,9 @@ COPY --from=builder /app/scripts ./scripts
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Create data directory
+# Create data directory and set permissions
 RUN mkdir -p /app/data /app/logs
-RUN chown -R nextjs:nodejs /app/data /app/logs
+RUN chown -R nextjs:nodejs /app/data /app/logs /app/src
 
 # Don't switch to nextjs user yet - entrypoint needs root permissions
 
