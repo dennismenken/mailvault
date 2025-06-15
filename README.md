@@ -1,222 +1,252 @@
 # Mail Vault
 
-A secure email archiving and search application built with Next.js, Prisma, and IMAP synchronization.
+A secure, self-hosted email management system built with Next.js 15, Prisma, and IMAP synchronization.
 
 ## Features
 
-- 🔐 Secure user authentication
-- 📧 IMAP email synchronization from multiple accounts
-- 🗄️ Separate SQLite databases per email account for optimal performance
-- 🔍 Full-text search across all email accounts
-- 📱 Modern, responsive web interface
-- ⚡ Real-time email synchronization with background scheduler
-- 📊 Email management and organization
-- 🛡️ Privacy-focused with local data storage
+- 🔐 **Secure Authentication** - NextAuth.js with credential-based login
+- 📧 **Multi-Account IMAP Sync** - Support for multiple email accounts
+- 📎 **Attachment Management** - Download and manage email attachments
+- 🔍 **Advanced Search** - Full-text search across all emails
+- 📱 **Responsive Design** - Modern UI that works on all devices
+- 🐳 **Docker Ready** - Easy deployment with Docker Compose
+- 🔄 **Background Sync** - Automatic email synchronization
+- 🗄️ **SQLite Storage** - Lightweight, file-based database
 
-## Technology Stack
+## Quick Start
 
-- **Frontend**: Next.js 15, React 19, Tailwind CSS, Shadcn/ui
-- **Backend**: Next.js API Routes, Prisma ORM
-- **Database**: SQLite (main app + individual account databases)
-- **Authentication**: NextAuth.js
-- **Email**: IMAP protocol with node-imap and mailparser
-- **Scheduling**: node-cron for background synchronization
+### Prerequisites
 
-## 🚀 Quick Start
+- Node.js 18+ or Docker
+- Git
 
-### 1. Installation
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd mail-vault
+   ```
+
+2. **Set up environment**
+   ```bash
+   cp docker.env.example .env
+   ```
+
+3. **Configure your environment**
+   Edit `.env` and set your values:
+   ```env
+   NEXTAUTH_SECRET=your-super-secret-key-change-this
+   NEXTAUTH_URL=http://localhost:3000
+   ```
+
+### Development
 
 ```bash
 # Install dependencies
 npm install
 
-# Initialize database
-npm run db:push
-```
+# Set up database
+npm run db:migrate
 
-### 2. Create Initial User
-
-Create the first user using command line arguments:
-
-```bash
-# Basic user creation
-npm run create-initial-user admin@example.com securepassword123
-
-# With name
-npm run create-initial-user admin@example.com securepassword123 "Administrator"
-```
-
-### 3. Start Application
-
-```bash
+# Start development server
 npm run dev
 ```
 
-Visit [http://localhost:3000](http://localhost:3000) and login with your credentials.
-
-## 📋 CLI Commands
-
-The CLI is only used for initial setup. All user management afterwards happens through the web interface.
+### Production (Docker)
 
 ```bash
-# Create the first user (required before web access)
-npm run create-initial-user <email> <password> [name]
+# Start with Docker Compose
+docker-compose up -d
 
-# Show system status
-npm run status
-
-# Reset ALL data (DANGER! - Deletes everything)
-npm run reset
+# View logs
+docker-compose logs -f
 ```
 
-### Examples:
+## Configuration
 
-```bash
-# Create initial user
-npm run create-initial-user admin@company.com mySecurePass123 "Admin User"
+### Environment Variables
 
-# Check status
-npm run status
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NODE_ENV` | Environment mode | `development` |
+| `PORT` | Application port | `3000` |
+| `NEXTAUTH_URL` | Application URL | `http://localhost:3000` |
+| `NEXTAUTH_SECRET` | NextAuth secret key | *required* |
+| `DATABASE_URL` | Main database path | `file:./data/database/main.db` |
+| `DATA_DIR` | Account databases directory | `./data/accounts` |
+| `ATTACHMENTS_DIR` | Attachment storage directory | `./data/attachments` |
+| `SYNC_INTERVAL_MINUTES` | Background sync interval | `30` |
+| `MAX_SYNC_ERRORS` | Max sync errors before disabling | `5` |
+| `LOG_LEVEL` | Logging level | `info` |
 
-# Complete reset (with confirmation prompt)
-npm run reset
+### Directory Structure
+
+```
+data/
+├── database/
+│   └── main.db              # Main application database
+├── accounts/
+│   └── {accountId}.db       # Individual account databases
+└── attachments/
+    └── {accountId}/
+        └── {emailId}/       # Email attachments
 ```
 
-**Note:** The CLI only allows creating one initial user. All subsequent user management and IMAP account setup must be done through the web interface after logging in.
+### Database Notes
 
-## Email Provider Setup
+- **Prisma Commands**: When running Prisma commands from the `prisma/` directory, temporarily set `DATABASE_URL=file:../data/database/main.db`
+- **Application Runtime**: The app uses `DATABASE_URL=file:./data/database/main.db` from the root directory
+- **Docker**: Uses the same paths as application runtime since everything runs from `/app`
 
-### Gmail
-1. Enable 2-factor authentication in your Google account
-2. Generate an App Password (Security → App passwords)
-3. In the web interface, use:
-   - Server: `imap.gmail.com`
-   - Port: `993`
-   - Username: Your Gmail address
-   - Password: The generated app password (not your regular password)
+## Usage
 
-### Outlook/Hotmail
-1. Enable IMAP in your Outlook settings
-2. In the web interface, use:
-   - Server: `outlook.office365.com`
-   - Port: `993`
-   - Username: Your email address
-   - Password: Your regular email password
+### Adding Email Accounts
 
-### Other Providers
-Check your email provider's IMAP settings documentation and configure through the web interface.
+1. Log in to the application
+2. Navigate to Settings → Email Accounts
+3. Click "Add Account"
+4. Enter your IMAP credentials:
+   - Email address
+   - IMAP server (e.g., `imap.gmail.com`)
+   - Port (usually 993 for SSL)
+   - Username and password
+5. Save and enable synchronization
 
-## Architecture
+### Managing Attachments
 
-### Database Design
-- **Main Database**: User accounts and IMAP configuration
-- **Account Databases**: Separate SQLite files for each email account's messages
-- **Benefits**: Better performance, easier backup, account isolation
+- Attachments are automatically detected during sync
+- Click the attachment icon in the email list to view attachments
+- Download individual attachments or view attachment details
+- Attachments are stored securely in the filesystem
 
-### Security Features
-- Password hashing with bcrypt
-- Session-based authentication
-- Account-level data isolation
-- Local data storage (no cloud dependencies)
+### Search and Filtering
+
+- Use the search bar to find emails by subject, sender, or content
+- Filter by account, folder, or attachment status
+- Advanced search supports multiple criteria
+
+## API Endpoints
+
+### Authentication
+- `POST /api/auth/signin` - User login
+- `POST /api/auth/signout` - User logout
+
+### Email Management
+- `GET /api/emails` - List emails with filtering
+- `GET /api/emails/[id]` - Get specific email
+
+### Attachments
+- `GET /api/attachments/[emailId]` - List email attachments
+- `GET /api/attachments/[emailId]/[filename]` - Download attachment
+
+### Account Management
+- `GET /api/accounts` - List IMAP accounts
+- `POST /api/accounts` - Create IMAP account
+- `PUT /api/accounts/[id]` - Update IMAP account
+- `DELETE /api/accounts/[id]` - Delete IMAP account
 
 ## Development
 
-### Project Structure
-```
-src/
-├── app/                    # Next.js app router
-│   ├── api/               # API routes
-│   ├── dashboard/         # Main application interface
-│   └── login/             # Authentication
-├── components/            # React components
-├── lib/                   # Utilities and configurations
-│   ├── auth.ts           # NextAuth configuration
-│   ├── prisma.ts         # Database client
-│   └── imap-sync.ts      # Email synchronization
-└── types/                # TypeScript definitions
+### Database Migrations
 
-scripts/
-├── cli.ts                # Command line interface
-└── sync-scheduler.ts     # Background sync process
-
-prisma/
-└── schema.prisma         # Database schema
-```
-
-### Key Components
-
-1. **IMAP Sync Service** (`src/lib/imap-sync.ts`)
-   - Handles email fetching and parsing
-   - Manages individual account databases
-   - Implements incremental synchronization
-
-2. **CLI Interface** (`scripts/cli.ts`)
-   - User and account management
-   - Database initialization
-   - Administrative tasks
-
-3. **Search API** (`src/app/api/emails/search/route.ts`)
-   - Cross-account email search
-   - Advanced filtering and pagination
-   - Performance optimized queries
-
-### Development Commands
 ```bash
-# Development server
-npm run dev
+# Create new migration
+npx prisma migrate dev --name migration-name
 
-# Database operations
-npm run db:push          # Push schema changes
-npm run db:generate      # Generate Prisma client
+# Apply migrations
+npx prisma migrate deploy
 
-# CLI operations
-npm run cli <command>    # Run CLI commands
-
-# Background sync
-npm run sync:start       # Start sync scheduler
+# Reset database (development only)
+npx prisma migrate reset
 ```
 
-## Deployment
+### Manual Sync
 
-### Production Setup
-1. Set production environment variables
-2. Use a production database (PostgreSQL recommended for main DB)
-3. Configure proper backup strategies for account databases
-4. Set up monitoring for sync processes
-5. Use a process manager (PM2) for the sync scheduler
-
-### Environment Variables
 ```bash
-DATABASE_URL="postgresql://user:pass@localhost:5432/mailvault"
-NEXTAUTH_URL="https://your-domain.com"
-NEXTAUTH_SECRET="production-secret-key"
-SYNC_INTERVAL_MINUTES=15
-MAX_SYNC_ERRORS=3
-DATA_DIR="/var/data/mailvault"
+# Run one-time sync
+node src/services/sync.js
+
+# Start background sync service
+node src/services/start-background-sync.js
 ```
+
+### Debugging
+
+```bash
+# View database content
+npx prisma studio
+
+# Check logs
+tail -f logs/app.log
+```
+
+## Docker Deployment
+
+### Using Docker Compose (Recommended)
+
+```bash
+# Start services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f web
+docker-compose logs -f sync
+
+# Stop services
+docker-compose down
+```
+
+### Manual Docker Build
+
+```bash
+# Build web service
+docker build -f Dockerfile.web -t mail-vault-web .
+
+# Build sync service
+docker build -f Dockerfile.sync -t mail-vault-sync .
+
+# Run with volumes
+docker run -d \
+  -p 3000:3000 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  --env-file .env \
+  mail-vault-web
+```
+
+## Security
+
+- All passwords are hashed using bcrypt
+- IMAP credentials are encrypted in the database
+- File access is restricted to authenticated users
+- Attachment downloads include security checks
+- CSRF protection enabled
+- Secure session management
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **IMAP Connection Failed**
-   - Verify server settings
-   - Check firewall/network access
-   - Ensure app passwords for Gmail/Outlook
+1. **Database locked errors**
+   - Ensure only one sync process is running
+   - Check file permissions on data directory
 
-2. **Database Errors**
-   - Run `npm run db:push` to sync schema
-   - Check file permissions for SQLite files
+2. **IMAP connection failures**
+   - Verify server settings and credentials
+   - Check firewall and network connectivity
+   - Enable "Less secure app access" for Gmail
 
-3. **Sync Stopped**
-   - Check error logs in the sync scheduler
-   - Verify IMAP account credentials
-   - Check disk space for database files
+3. **Attachment download issues**
+   - Verify file permissions
+   - Check available disk space
+   - Ensure attachment path exists
 
 ### Logs
-- Application logs: Console output from `npm run dev`
-- Sync logs: Console output from `npm run sync:start`
-- Database logs: Check SQLite file integrity
+
+- Application logs: `logs/app.log`
+- Docker logs: `docker-compose logs`
+- Database logs: Check SQLite journal files
 
 ## Contributing
 
@@ -228,11 +258,4 @@ DATA_DIR="/var/data/mailvault"
 
 ## License
 
-This project is licensed under the MIT License.
-
-## Support
-
-For issues and questions:
-1. Check the troubleshooting section
-2. Review the CLI help output
-3. Open an issue on GitHub
+This project is licensed under the MIT License - see the LICENSE file for details.

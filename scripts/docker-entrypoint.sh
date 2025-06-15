@@ -19,7 +19,9 @@ run_main_migrations() {
     echo "🔄 Running main database migrations..."
     
     # Ensure database directory exists
-    mkdir -p /app/data
+    mkdir -p /app/data/database
+    mkdir -p /app/data/accounts
+    mkdir -p /app/data/attachments
     
     # Run Prisma migrations
     if npx prisma migrate deploy; then

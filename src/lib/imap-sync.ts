@@ -392,7 +392,8 @@ export class ImapSyncService {
     const path = await import('path');
     
     // Create unique directory for this email's attachments
-    const attachmentsDir = path.join(process.cwd(), 'data', 'attachments', this.accountId, messageId);
+    const attachmentsBaseDir = process.env.ATTACHMENTS_DIR || './data/attachments';
+    const attachmentsDir = path.join(process.cwd(), attachmentsBaseDir, this.accountId, messageId);
     await fs.mkdir(attachmentsDir, { recursive: true });
     
     // Save each attachment
