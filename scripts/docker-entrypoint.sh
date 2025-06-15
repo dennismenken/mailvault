@@ -14,14 +14,24 @@ wait_for_database() {
     echo "✅ Data directory found"
 }
 
-# Function to run main database migrations
-run_main_migrations() {
-    echo "🔄 Running main database migrations..."
+# Function to setup data directories
+setup_data_directories() {
+    echo "📁 Setting up data directories..."
     
-    # Ensure database directory exists
+    # Ensure database directory exists (as root)
     mkdir -p /app/data/database
     mkdir -p /app/data/accounts
     mkdir -p /app/data/attachments
+    
+    # Set proper ownership
+    chown -R nextjs:nodejs /app/data
+    
+    echo "✅ Data directories setup completed"
+}
+
+# Function to run main database migrations
+run_main_migrations() {
+    echo "🔄 Running main database migrations..."
     
     # Run Prisma migrations
     if npx prisma migrate deploy; then
@@ -67,6 +77,9 @@ main() {
     # Wait for mounted volumes
     wait_for_database
     
+    # Setup data directories (as root)
+    setup_data_directories
+    
     # Check Prisma client (only generate if missing)
     check_prisma_client
     
@@ -75,11 +88,11 @@ main() {
     run_account_migrations
     
     echo "✅ Setup completed successfully!"
-    echo "🚀 Starting application: $@"
+    echo "🚀 Starting application as nextjs user: $@"
     echo "================================"
     
-    # Execute the main command
-    exec "$@"
+    # Switch to nextjs user and execute the main command
+    exec su-exec nextjs "$@"
 }
 
 # Run main function with all arguments

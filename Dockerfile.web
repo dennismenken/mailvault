@@ -1,8 +1,8 @@
 # Web Service Dockerfile
 FROM node:18-alpine AS base
 
-# Install bash for entrypoint scripts
-RUN apk add --no-cache bash
+# Install bash and su-exec for entrypoint scripts
+RUN apk add --no-cache bash su-exec
 
 # Install dependencies only when needed
 FROM base AS deps
@@ -61,7 +61,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 RUN mkdir -p /app/data /app/logs
 RUN chown -R nextjs:nodejs /app/data /app/logs
 
-USER nextjs
+# Don't switch to nextjs user yet - entrypoint needs root permissions
 
 EXPOSE 3000
 
