@@ -1,6 +1,9 @@
 # Web Service Dockerfile
 FROM node:18-alpine AS base
 
+# Install bash for entrypoint scripts
+RUN apk add --no-cache bash
+
 # Install dependencies only when needed
 FROM base AS deps
 # Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine to understand why libc6-compat might be needed.
@@ -50,8 +53,8 @@ COPY --from=builder /app/package.json ./package.json
 # Copy migration scripts
 COPY --from=builder /app/scripts ./scripts
 
-# Copy entrypoint script
-COPY --from=builder /app/scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# Copy entrypoint script directly
+COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Create data directory
