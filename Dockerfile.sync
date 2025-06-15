@@ -38,13 +38,15 @@ COPY scripts ./scripts
 COPY scripts/docker-entrypoint-sync.sh /usr/local/bin/docker-entrypoint-sync.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-sync.sh
 
+# Generate Prisma client as root first
+RUN npx prisma generate
+
 # Create data directory and ensure proper permissions
-RUN mkdir -p /app/data /app/logs /app/src/generated
+RUN mkdir -p /app/data /app/logs
 RUN chown -R mailsync:mailsync /app/data /app/logs /app/src
 
-# Generate Prisma client as mailsync user
+# Switch to mailsync user for runtime
 USER mailsync
-RUN npx prisma generate
 
 # Use entrypoint for setup
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint-sync.sh"]
