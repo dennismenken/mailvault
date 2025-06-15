@@ -584,8 +584,9 @@ class ImapSyncService {
     const path = require('path');
     
     try {
-      // Create attachments directory structure: data/attachments/{accountId}/{messageId}/
-      const attachmentsDir = path.join(process.cwd(), 'data', 'attachments', this.accountId, emailId);
+      // Create attachments directory structure: {ATTACHMENTS_DIR}/{accountId}/{messageId}/
+      const attachmentsBaseDir = process.env.ATTACHMENTS_DIR || './data/attachments';
+      const attachmentsDir = path.join(process.cwd(), attachmentsBaseDir, this.accountId, emailId);
       
       // Ensure directory exists
       await fs.mkdir(attachmentsDir, { recursive: true });

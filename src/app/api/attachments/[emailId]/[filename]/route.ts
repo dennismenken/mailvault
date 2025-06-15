@@ -85,7 +85,8 @@ export async function GET(
       await fs.access(filePath);
       
       // Security check: ensure file is within attachments directory
-      const attachmentsDir = path.join(process.cwd(), 'data', 'attachments');
+      const attachmentsBaseDir = process.env.ATTACHMENTS_DIR || './data/attachments';
+      const attachmentsDir = path.join(process.cwd(), attachmentsBaseDir);
       const resolvedFilePath = path.resolve(filePath);
       const resolvedAttachmentsDir = path.resolve(attachmentsDir);
       

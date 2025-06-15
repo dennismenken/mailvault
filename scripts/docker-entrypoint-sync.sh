@@ -21,7 +21,7 @@ wait_for_main_database() {
     local attempt=1
     
     while [ $attempt -le $max_attempts ]; do
-        if [ -f "/app/data/main.db" ]; then
+        if [ -f "/app/data/database/main.db" ]; then
             echo "✅ Main database found"
             return 0
         fi
