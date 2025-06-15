@@ -1,0 +1,78 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  passwordHash String
+  name         String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  imapAccounts ImapAccount[]
+
+  @@map("users")
+}
+
+model ImapAccount {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email         String
+  imapServer    String
+  imapPort      Int      @default(993)
+  imapUsername  String
+  imapPassword  String
+  useTls        Boolean  @default(true)
+  isActive      Boolean  @default(true)
+  syncEnabled   Boolean  @default(true)
+  lastSyncAt    DateTime?
+  dbPath        String   // Path to SQLite database for this account
+  errorMessage  String?
+  errorCount    Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("imap_accounts")
+}
+
+// This model will be used in separate SQLite databases for each IMAP account
+model Email {
+  id             String    @id @default(cuid())
+  messageId      String    @unique
+  subject        String?
+  fromAddress    String?
+  fromName       String?
+  toAddresses    String?   // JSON array of recipients
+  ccAddresses    String?   // JSON array of CC recipients
+  bccAddresses   String?   // JSON array of BCC recipients
+  bodyText       String?
+  bodyHtml       String?
+  contentType    String    @default("PLAIN") // "HTML" or "PLAIN"
+  folder         String
+  flags          String?   // JSON array of IMAP flags
+  date           DateTime?
+  size           Int?
+  attachments    String?   // JSON array of attachment info
+  attachmentsPath String?  // Path to stored attachments directory
+  hasAttachments Boolean   @default(false) // Quick flag for filtering
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@map("emails")
+  @@index([folder])
+  @@index([date])
+  @@index([fromAddress])
+  @@index([subject])
+  @@index([hasAttachments])
+  @@index([contentType])
+}

@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  # Web Service - Next.js Application
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: mail-vault-web
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXTAUTH_SECRET=your-secret-key-here-change-this-in-production
+      - DATABASE_URL=file:./data/main.db
+      - DATA_DIR=/app/data
+      - SYNC_INTERVAL_MINUTES=30
+      - MAX_SYNC_ERRORS=5
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - attachments:/app/data/attachments
+    depends_on:
+      - sync
+    restart: unless-stopped
+    networks:
+      - mail-vault
+
+  # Sync Service - IMAP Background Sync
+  sync:
+    build:
+      context: .
+      dockerfile: Dockerfile.sync
+    container_name: mail-vault-sync
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=file:./data/main.db
+      - DATA_DIR=/app/data
+      - SYNC_INTERVAL_MINUTES=30
+      - MAX_SYNC_ERRORS=5
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - attachments:/app/data/attachments
+    restart: unless-stopped
+    networks:
+      - mail-vault
+
+networks:
+  mail-vault:
+    driver: bridge
+
+volumes:
+  attachments:
+    driver: local 
