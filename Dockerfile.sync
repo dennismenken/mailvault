@@ -1,0 +1,41 @@
+# Sync Service Dockerfile
+FROM node:18-alpine AS base
+
+# Install dependencies only when needed
+FROM base AS deps
+RUN apk add --no-cache libc6-compat python3 make g++
+WORKDIR /app
+
+# Install dependencies based on the preferred package manager
+COPY package*.json ./
+RUN npm ci --only=production
+
+# Production image, copy all the files and run the sync service
+FROM base AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+RUN addgroup --system --gid 1001 mailsync
+RUN adduser --system --uid 1001 mailsync
+
+# Copy dependencies
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copy source code needed for sync service
+COPY src/services ./src/services
+COPY src/lib ./src/lib
+COPY prisma ./prisma
+COPY package.json ./
+
+# Generate Prisma client
+RUN npx prisma generate
+
+# Create data directory
+RUN mkdir -p /app/data /app/logs
+RUN chown -R mailsync:mailsync /app/data /app/logs
+
+USER mailsync
+
+# Run the background sync service
+CMD ["node", "src/services/start-background-sync.js"] 

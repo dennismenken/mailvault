@@ -1,0 +1,27 @@
+# Mail Vault Data Directory
+# This directory contains all application data and can be mounted in production
+
+# Main application database
+database/
+database/*.db
+database/*.db-*
+
+# Account-specific email databases  
+accounts/
+accounts/*.db
+accounts/*.db-*
+
+# Email attachments directory
+attachments/
+attachments/**/*
+
+# Backup files
+*.backup
+*.bak
+
+# Logs
+*.log
+
+# Keep directory structure
+!.gitignore
+!.keep 
