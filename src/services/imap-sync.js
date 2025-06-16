@@ -148,7 +148,7 @@ class ImapSyncService {
       // Initialize SQLite database directly
       this.db = new sqlite3.Database(this.dbPath);
 
-      // Initialize database schema
+      // Initialize database schema with current schema (latest version)
       const createTableSQL = `
         CREATE TABLE IF NOT EXISTS emails (
           id TEXT PRIMARY KEY,
@@ -161,11 +161,14 @@ class ImapSyncService {
           bccAddresses TEXT,
           bodyText TEXT,
           bodyHtml TEXT,
+          contentType TEXT DEFAULT 'PLAIN',
           folder TEXT NOT NULL,
           flags TEXT,
           date DATETIME,
           size INTEGER,
           attachments TEXT,
+          attachmentsPath TEXT,
+          hasAttachments BOOLEAN DEFAULT FALSE,
           createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
           updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -177,7 +180,9 @@ class ImapSyncService {
         'CREATE INDEX IF NOT EXISTS idx_emails_date ON emails(date)',
         'CREATE INDEX IF NOT EXISTS idx_emails_from ON emails(fromAddress)',
         'CREATE INDEX IF NOT EXISTS idx_emails_subject ON emails(subject)',
-        'CREATE INDEX IF NOT EXISTS idx_emails_messageid ON emails(messageId)'
+        'CREATE INDEX IF NOT EXISTS idx_emails_messageid ON emails(messageId)',
+        'CREATE INDEX IF NOT EXISTS idx_emails_has_attachments ON emails(hasAttachments)',
+        'CREATE INDEX IF NOT EXISTS idx_emails_content_type ON emails(contentType)'
       ];
 
       // Execute schema creation
