@@ -16,6 +16,7 @@
     "sync:background": "node src/services/start-background-sync.js",
     "cli": "node scripts/cli.js",
     "migrate:accounts": "node scripts/migrate-account-databases.js",
+    "migrate:accounts:force": "node scripts/migrate-account-databases.js --force",
     "create-initial-user": "node scripts/cli.js create-initial-user",
     "status": "node scripts/cli.js status",
     "reset": "node scripts/cli.js reset"

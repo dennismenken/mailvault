@@ -233,28 +233,46 @@ class ImapSyncService {
   }
 
   async syncFolder(folderName) {
-    let reconnectAttempts = 0;
+    const maxRetries = this.maxReconnectAttempts;
     
-    while (reconnectAttempts <= this.maxReconnectAttempts) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         return await this.syncFolderAttempt(folderName);
       } catch (error) {
-        if (error.message.includes('socket') || error.message.includes('connection') || 
-            error.message.includes('ended by the other party')) {
-          
-          reconnectAttempts++;
-          console.log(`🔄 Connection lost during folder sync. Reconnect attempt ${reconnectAttempts}/${this.maxReconnectAttempts}`);
-          
-          if (reconnectAttempts <= this.maxReconnectAttempts) {
-            await this.reconnect();
-            continue; // Retry with new connection
-          }
+        console.error(`❌ Sync attempt ${attempt} failed for folder ${folderName}:`, error.message);
+        
+        if (attempt < maxRetries) {
+          console.log(`🔄 Retrying sync for folder ${folderName} (attempt ${attempt + 1}/${maxRetries})...`);
+          await this.reconnect();
+          await new Promise(resolve => setTimeout(resolve, this.reconnectDelay));
+        } else {
+          console.error(`❌ Max retries reached for folder ${folderName}`);
+          throw error;
         }
-        throw error;
       }
     }
-    
-    throw new Error(`Failed to sync folder ${folderName} after ${this.maxReconnectAttempts} connection attempts`);
+  }
+
+  async getLastSyncDate(folderName) {
+    try {
+      return new Promise((resolve, reject) => {
+        this.db.get(
+          'SELECT MAX(date) as lastDate FROM emails WHERE folder = ?',
+          [folderName],
+          (err, row) => {
+            if (err) {
+              console.warn(`⚠️ Could not get last sync date for folder ${folderName}:`, err);
+              resolve(null);
+            } else {
+              resolve(row?.lastDate ? new Date(row.lastDate) : null);
+            }
+          }
+        );
+      });
+    } catch (error) {
+      console.warn(`⚠️ Could not get last sync date for folder ${folderName}:`, error);
+      return null;
+    }
   }
 
   async syncFolderAttempt(folderName) {
@@ -274,104 +292,148 @@ class ImapSyncService {
           }
 
           console.log(`📁 Syncing folder ${folderName} with ${totalMessages} messages`);
-          console.log(`⚙️  Using batch size: ${this.batchSize}, delay: ${this.batchDelay}ms`);
 
-          // Get existing message IDs to avoid duplicates
-          const existingMessages = await this.getExistingMessageIds(folderName);
+          // Get the last sync date for incremental sync
+          const lastSyncDate = await this.getLastSyncDate(folderName);
+          let messagesToFetch = [];
           let newMessageCount = 0;
 
-          // For large mailboxes, warn about processing time
-          if (totalMessages > 1000) {
-            console.log(`📊 Large mailbox detected (${totalMessages} messages). This will take time...`);
-            const estimatedTime = Math.round((totalMessages / this.batchSize) * (this.batchDelay / 1000) / 60);
-            console.log(`⏱️  Estimated time: ~${estimatedTime} minutes`);
+          if (lastSyncDate) {
+            console.log(`🔄 Incremental sync: looking for messages since ${lastSyncDate.toISOString()}`);
+            
+            // Use IMAP SEARCH to find messages since last sync
+            const searchCriteria = ['SINCE', lastSyncDate];
+            
+            try {
+              const searchResults = await new Promise((resolve, reject) => {
+                this.imap.search(searchCriteria, (err, results) => {
+                  if (err) reject(err);
+                  else resolve(results || []);
+                });
+              });
+
+              console.log(`📬 Found ${searchResults.length} messages since last sync`);
+
+              if (searchResults.length === 0) {
+                console.log(`📁 No new messages in folder ${folderName} since last sync`);
+                resolve(0);
+                return;
+              }
+
+              messagesToFetch = searchResults;
+            } catch (searchError) {
+              console.warn(`⚠️ SEARCH failed, falling back to full header check:`, searchError.message);
+              // Fall back to the original method
+              messagesToFetch = await this.getNewMessagesFullCheck(folderName, totalMessages);
+            }
+          } else {
+            console.log(`🆕 First sync for folder ${folderName}, checking all messages`);
+            messagesToFetch = await this.getNewMessagesFullCheck(folderName, totalMessages);
           }
 
-          const fetch = this.imap.seq.fetch('1:*', {
-            bodies: 'HEADER.FIELDS (MESSAGE-ID)',
-            struct: true,
-          });
+          if (messagesToFetch.length === 0) {
+            console.log(`📁 No new messages to sync in folder ${folderName}`);
+            resolve(0);
+            return;
+          }
 
-          const messagesToFetch = [];
-          let processedHeaders = 0;
-          
-          fetch.on('message', (msg, seqno) => {
-            msg.on('body', (stream, info) => {
-              let buffer = '';
-              
-              stream.on('data', (chunk) => {
-                buffer += chunk.toString('ascii');
-              });
-              
-              stream.once('end', () => {
-                const messageId = this.extractMessageId(buffer);
-                if (messageId && !existingMessages.has(messageId)) {
-                  messagesToFetch.push(seqno);
-                }
-                
-                processedHeaders++;
-                if (processedHeaders % 500 === 0) {
-                  console.log(`📋 Processed ${processedHeaders}/${totalMessages} headers...`);
-                }
-              });
-            });
-          });
+          console.log(`📥 Fetching ${messagesToFetch.length} new messages from ${folderName}`);
 
-          fetch.once('end', async () => {
-            if (messagesToFetch.length === 0) {
-              console.log(`📁 No new messages in folder ${folderName}`);
-              resolve(0);
-              return;
-            }
-
-            console.log(`📥 Fetching ${messagesToFetch.length} new messages from ${folderName}`);
-
-            // Fetch full messages in small batches with delays
-            for (let i = 0; i < messagesToFetch.length; i += this.batchSize) {
-              const batch = messagesToFetch.slice(i, i + this.batchSize);
-              const batchNum = Math.floor(i / this.batchSize) + 1;
-              const totalBatches = Math.ceil(messagesToFetch.length / this.batchSize);
+          // Fetch full messages in small batches with delays
+          for (let i = 0; i < messagesToFetch.length; i += this.batchSize) {
+            const batch = messagesToFetch.slice(i, i + this.batchSize);
+            const batchNum = Math.floor(i / this.batchSize) + 1;
+            const totalBatches = Math.ceil(messagesToFetch.length / this.batchSize);
+            
+            console.log(`📦 Processing batch ${batchNum}/${totalBatches} (${batch.length} messages)`);
+            
+            try {
+              const count = await this.fetchMessageBatch(batch, folderName);
+              newMessageCount += count;
               
-              console.log(`📦 Processing batch ${batchNum}/${totalBatches} (${batch.length} messages)`);
+              // Progress update
+              const progress = Math.round(((i + batch.length) / messagesToFetch.length) * 100);
+              console.log(`✅ Batch completed: ${i + batch.length}/${messagesToFetch.length} messages (${progress}%)`);
               
-              try {
-                const count = await this.fetchMessageBatch(batch, folderName);
-                newMessageCount += count;
-                
-                // Progress update
-                const progress = Math.round(((i + batch.length) / messagesToFetch.length) * 100);
-                console.log(`✅ Batch completed: ${i + batch.length}/${messagesToFetch.length} messages (${progress}%)`);
-                
-                // Gmail-friendly delay between batches
-                if (i + this.batchSize < messagesToFetch.length) {
-                  console.log(`⏸️  Waiting ${this.batchDelay}ms before next batch...`);
-                  await new Promise(resolve => setTimeout(resolve, this.batchDelay));
-                }
-                
-              } catch (error) {
-                this.errors.push(`Batch processing error in ${folderName}: ${error.message}`);
-                console.error(`❌ Batch ${batchNum} error: ${error.message}`);
-                
-                // If it's a connection error, let the outer function handle reconnection
-                if (error.message.includes('socket') || error.message.includes('connection')) {
-                  throw error;
-                }
-                
-                if (this.errors.length >= this.maxErrors) {
-                  console.error(`❌ Maximum errors reached (${this.maxErrors}). Stopping sync.`);
-                  break;
-                }
+              // Gmail-friendly delay between batches
+              if (i + this.batchSize < messagesToFetch.length) {
+                console.log(`⏸️  Waiting ${this.batchDelay}ms before next batch...`);
+                await new Promise(resolve => setTimeout(resolve, this.batchDelay));
+              }
+              
+            } catch (error) {
+              this.errors.push(`Batch processing error in ${folderName}: ${error.message}`);
+              console.error(`❌ Batch ${batchNum} error: ${error.message}`);
+              
+              // If it's a connection error, let the outer function handle reconnection
+              if (error.message.includes('socket') || error.message.includes('connection')) {
+                throw error;
+              }
+              
+              if (this.errors.length >= this.maxErrors) {
+                console.error(`❌ Maximum errors reached (${this.maxErrors}). Stopping sync.`);
+                break;
               }
             }
+          }
 
-            resolve(newMessageCount);
-          });
-
-          fetch.once('error', reject);
+          resolve(newMessageCount);
         } catch (error) {
           reject(error);
         }
       });
+    });
+  }
+
+  async getNewMessagesFullCheck(folderName, totalMessages) {
+    console.log(`⚙️  Using batch size: ${this.batchSize}, delay: ${this.batchDelay}ms`);
+
+    // Get existing message IDs to avoid duplicates
+    const existingMessages = await this.getExistingMessageIds(folderName);
+
+    // For large mailboxes, warn about processing time
+    if (totalMessages > 1000) {
+      console.log(`📊 Large mailbox detected (${totalMessages} messages). This will take time...`);
+      const estimatedTime = Math.round((totalMessages / this.batchSize) * (this.batchDelay / 1000) / 60);
+      console.log(`⏱️  Estimated time: ~${estimatedTime} minutes`);
+    }
+
+    return new Promise((resolve, reject) => {
+      const fetch = this.imap.seq.fetch('1:*', {
+        bodies: 'HEADER.FIELDS (MESSAGE-ID)',
+        struct: true,
+      });
+
+      const messagesToFetch = [];
+      let processedHeaders = 0;
+      
+      fetch.on('message', (msg, seqno) => {
+        msg.on('body', (stream, info) => {
+          let buffer = '';
+          
+          stream.on('data', (chunk) => {
+            buffer += chunk.toString('ascii');
+          });
+          
+          stream.once('end', () => {
+            const messageId = this.extractMessageId(buffer);
+            if (messageId && !existingMessages.has(messageId)) {
+              messagesToFetch.push(seqno);
+            }
+            
+            processedHeaders++;
+            if (processedHeaders % 500 === 0) {
+              console.log(`📋 Processed ${processedHeaders}/${totalMessages} headers...`);
+            }
+          });
+        });
+      });
+
+      fetch.once('end', () => {
+        resolve(messagesToFetch);
+      });
+
+      fetch.once('error', reject);
     });
   }
 
@@ -638,6 +700,78 @@ class ImapSyncService {
     return `c${timestamp}${randomPart}`;
   }
 
+  async incrementalSync() {
+    const startTime = Date.now();
+    this.errors = [];
+    this.processedMessages = 0;
+    this.totalNewMessages = 0;
+
+    try {
+      await this.connect();
+      await this.initializeAccountDatabase();
+      
+      const folders = await this.getFolders();
+      console.log(`📁 Found ${folders.length} folders for incremental sync of account ${this.accountId}`);
+
+      // Prioritize INBOX first for incremental sync
+      const priorityFolders = ['INBOX'];
+      const secondaryFolders = ['Sent', 'Drafts', 'Important', '[Gmail]/Sent Mail', '[Gmail]/Drafts'];
+      
+      const sortedFolders = [
+        ...folders.filter(f => priorityFolders.some(pf => f.toLowerCase() === pf.toLowerCase())),
+        ...folders.filter(f => secondaryFolders.some(pf => f.toLowerCase().includes(pf.toLowerCase()))),
+        ...folders.filter(f => 
+          !priorityFolders.some(pf => f.toLowerCase() === pf.toLowerCase()) &&
+          !secondaryFolders.some(pf => f.toLowerCase().includes(pf.toLowerCase()))
+        )
+      ];
+
+      for (const folder of sortedFolders) {
+        try {
+          console.log(`\n🔄 Starting incremental sync for folder: ${folder}`);
+          const messageCount = await this.syncFolder(folder);
+          console.log(`✅ Synced ${messageCount} new messages from folder ${folder}`);
+          
+          // Progress summary after each folder
+          const elapsed = Math.round((Date.now() - startTime) / 1000);
+          console.log(`📊 Progress: ${this.totalNewMessages} total new messages, ${Math.floor(elapsed / 60)}m ${elapsed % 60}s elapsed`);
+          
+          // Short delay between folders for incremental sync
+          if (sortedFolders.indexOf(folder) < sortedFolders.length - 1) {
+            console.log(`⏸️  Waiting 1 second before next folder...`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          
+        } catch (error) {
+          const errorMsg = `Failed to sync folder ${folder}: ${error.message}`;
+          this.errors.push(errorMsg);
+          console.error(`❌ ${errorMsg}`);
+          
+          if (this.errors.length >= this.maxErrors) {
+            console.error(`❌ Maximum errors reached (${this.maxErrors}). Stopping sync.`);
+            break;
+          }
+        }
+      }
+
+    } catch (error) {
+      this.errors.push(`Connection error: ${error.message}`);
+      console.error(`❌ IMAP incremental sync failed for account ${this.accountId}:`, error.message);
+    } finally {
+      await this.disconnect();
+    }
+
+    const totalTime = Math.round((Date.now() - startTime) / 1000);
+    console.log(`\n📊 Incremental sync completed in ${Math.floor(totalTime / 60)}m ${totalTime % 60}s`);
+    
+    return { 
+      totalMessages: this.totalNewMessages, 
+      errors: this.errors,
+      timeElapsed: totalTime,
+      processedMessages: this.processedMessages
+    };
+  }
+
   async fullSync() {
     const startTime = Date.now();
     this.errors = [];
@@ -649,7 +783,7 @@ class ImapSyncService {
       await this.initializeAccountDatabase();
       
       const folders = await this.getFolders();
-      console.log(`📁 Found ${folders.length} folders for account ${this.accountId}`);
+      console.log(`📁 Found ${folders.length} folders for full sync of account ${this.accountId}`);
 
       // Prioritize INBOX first for large mailboxes  
       const priorityFolders = ['INBOX'];
@@ -666,7 +800,7 @@ class ImapSyncService {
 
       for (const folder of sortedFolders) {
         try {
-          console.log(`\n🔄 Starting sync for folder: ${folder}`);
+          console.log(`\n🔄 Starting full sync for folder: ${folder}`);
           const messageCount = await this.syncFolder(folder);
           console.log(`✅ Synced ${messageCount} messages from folder ${folder}`);
           
@@ -694,13 +828,13 @@ class ImapSyncService {
 
     } catch (error) {
       this.errors.push(`Connection error: ${error.message}`);
-      console.error(`❌ IMAP sync failed for account ${this.accountId}:`, error.message);
+      console.error(`❌ IMAP full sync failed for account ${this.accountId}:`, error.message);
     } finally {
       await this.disconnect();
     }
 
     const totalTime = Math.round((Date.now() - startTime) / 1000);
-    console.log(`\n📊 Sync completed in ${Math.floor(totalTime / 60)}m ${totalTime % 60}s`);
+    console.log(`\n📊 Full sync completed in ${Math.floor(totalTime / 60)}m ${totalTime % 60}s`);
     
     return { 
       totalMessages: this.totalNewMessages, 

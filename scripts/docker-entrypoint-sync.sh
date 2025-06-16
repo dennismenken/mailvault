@@ -52,14 +52,14 @@ check_prisma_client() {
     fi
 }
 
-# Function to run account database migrations
-run_account_migrations() {
-    echo "🔄 Running account database migrations..."
+# Function to check account database migrations
+check_account_migrations() {
+    echo "🔍 Checking account database migrations..."
     
     if node scripts/migrate-account-databases.js; then
-        echo "✅ Account database migrations completed"
+        echo "✅ Account database check completed"
     else
-        echo "⚠️ Account database migrations failed (this is normal if no accounts exist)"
+        echo "⚠️ Account database check failed (this is normal if no accounts exist)"
     fi
 }
 
@@ -76,8 +76,8 @@ main() {
     # Wait for main database (created by web service)
     wait_for_main_database
     
-    # Run account database migrations
-    run_account_migrations
+    # Check account database migrations
+    check_account_migrations
     
     echo "✅ Sync service setup completed!"
     echo "🚀 Starting sync service: $@"

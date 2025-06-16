@@ -101,7 +101,8 @@ class SyncScheduler {
         dbPath: account.dbPath,
       });
 
-      const result = await syncService.fullSync();
+      // Use incremental sync for scheduled syncs
+      const result = await syncService.incrementalSync();
 
       // Update account with sync results
       await prisma.imapAccount.update({
