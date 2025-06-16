@@ -5,7 +5,7 @@ const { ImapSyncService } = require('./imap-sync');
 
 const prisma = new PrismaClient();
 
-async function syncImapAccount(accountId) {
+async function syncImapAccount(accountId, useIncrementalSync = true) {
   // Get the account from database
   const account = await prisma.imapAccount.findUnique({
     where: { id: accountId },
@@ -35,8 +35,10 @@ async function syncImapAccount(accountId) {
     dbPath: account.dbPath,
   });
 
-  // Perform sync
-  const result = await syncService.fullSync();
+  // Perform sync - use incremental by default for performance
+  const result = useIncrementalSync 
+    ? await syncService.incrementalSync() 
+    : await syncService.fullSync();
   
   return {
     newEmails: result.totalMessages,
@@ -47,8 +49,9 @@ async function syncImapAccount(accountId) {
   };
 }
 
-async function syncAllAccounts() {
-  console.log('🔄 Starting comprehensive email synchronization...');
+async function syncAllAccounts(forceFullSync = false) {
+  const syncType = forceFullSync ? 'full' : 'incremental';
+  console.log(`🔄 Starting ${syncType} email synchronization...`);
   console.log('═'.repeat(60));
   const startTime = Date.now();
 
@@ -77,6 +80,10 @@ async function syncAllAccounts() {
       console.log(`      Server: ${account.imapServer}:${account.imapPort} (${account.useTls ? 'TLS' : 'No TLS'})`);
       console.log(`      Database: ${account.dbPath}`);
     });
+    console.log(`\n📝 Sync mode: ${syncType.toUpperCase()}`);
+    if (!forceFullSync) {
+      console.log('💡 Tip: Use --full flag for complete synchronization of all messages');
+    }
     console.log('');
 
     // Sync each account
@@ -87,13 +94,13 @@ async function syncAllAccounts() {
     for (let i = 0; i < accounts.length; i++) {
       const account = accounts[i];
       console.log(`\n${'='.repeat(80)}`);
-      console.log(`🔄 SYNCING ACCOUNT ${i + 1}/${accounts.length}: ${account.email}`);
+      console.log(`🔄 ${syncType.toUpperCase()} SYNC ${i + 1}/${accounts.length}: ${account.email}`);
       console.log(`   User: ${account.user.email}`);
       console.log(`   Server: ${account.imapServer}:${account.imapPort} (${account.useTls ? 'TLS' : 'No TLS'})`);
       console.log(`${'='.repeat(80)}`);
       
       try {
-        const result = await syncImapAccount(account.id);
+        const result = await syncImapAccount(account.id, !forceFullSync);
         results.push({
           account: account.email,
           user: account.user.email,
@@ -141,7 +148,7 @@ async function syncAllAccounts() {
     // Final Summary
     const totalTime = Math.round((Date.now() - startTime) / 1000);
     console.log(`\n${'█'.repeat(80)}`);
-    console.log(`📊 FINAL SYNCHRONIZATION SUMMARY`);
+    console.log(`📊 FINAL ${syncType.toUpperCase()} SYNCHRONIZATION SUMMARY`);
     console.log(`${'█'.repeat(80)}`);
     
     const successful = results.filter(r => r.success);
@@ -175,6 +182,7 @@ async function syncAllAccounts() {
 
     console.log(`\n💾 All emails are stored in separate SQLite databases per account`);
     console.log(`🔍 Use the web interface to search and browse synced emails`);
+    console.log(`🔄 Background service uses incremental sync every ${process.env.SYNC_INTERVAL_MINUTES || 30} minutes`);
     console.log(`${'█'.repeat(80)}`);
 
   } catch (error) {
@@ -185,26 +193,16 @@ async function syncAllAccounts() {
   }
 }
 
-// Handle process termination gracefully
-process.on('SIGINT', async () => {
-  console.log('\n🛑 Sync interrupted by user');
-  console.log('💾 Partial sync data has been saved');
-  await prisma.$disconnect();
-  process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-  console.log('\n🛑 Sync terminated');
-  console.log('💾 Partial sync data has been saved');
-  await prisma.$disconnect();
-  process.exit(0);
-});
+// Parse command line arguments
+const args = process.argv.slice(2);
+const forceFullSync = args.includes('--full') || args.includes('-f');
 
 // Only run if this script is executed directly
 if (require.main === module) {
-  syncAllAccounts()
+  syncAllAccounts(forceFullSync)
     .then(() => {
-      console.log('\n🎉 All synchronization tasks completed successfully!');
+      const syncType = forceFullSync ? 'full' : 'incremental';
+      console.log(`\n🎉 All ${syncType} synchronization tasks completed successfully!`);
       process.exit(0);
     })
     .catch((error) => {

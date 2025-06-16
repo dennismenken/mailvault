@@ -46,14 +46,14 @@ run_main_migrations() {
     fi
 }
 
-# Function to run account database migrations
-run_account_migrations() {
-    echo "🔄 Running account database migrations..."
+# Function to check account database migrations
+check_account_migrations() {
+    echo "🔍 Checking account database migrations..."
     
     if node scripts/migrate-account-databases.js; then
-        echo "✅ Account database migrations completed"
+        echo "✅ Account database check completed"
     else
-        echo "⚠️ Account database migrations failed (this is normal for first run)"
+        echo "⚠️ Account database check failed (this is normal for first run)"
     fi
 }
 
@@ -89,7 +89,7 @@ main() {
     
     # Run migrations
     run_main_migrations
-    run_account_migrations
+    check_account_migrations
     
     echo "✅ Setup completed successfully!"
     echo "🚀 Starting application as nextjs user: $@"

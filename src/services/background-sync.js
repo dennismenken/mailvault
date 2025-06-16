@@ -100,7 +100,8 @@ class BackgroundSyncService {
             dbPath: account.dbPath,
           });
 
-          const result = await syncService.fullSync();
+          // Use incremental sync for regular scheduled syncs
+          const result = await syncService.incrementalSync();
 
           // Update sync status
           await this.prisma.imapAccount.update({
@@ -112,7 +113,7 @@ class BackgroundSyncService {
             },
           });
 
-          console.log(`✅ Sync completed for ${account.email}: ${result.totalMessages} new messages`);
+          console.log(`✅ Incremental sync completed for ${account.email}: ${result.totalMessages} new messages`);
 
         } catch (error) {
           console.error(`❌ Sync failed for account ${account.email}:`, error.message);

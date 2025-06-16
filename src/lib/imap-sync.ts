@@ -199,61 +199,116 @@ export class ImapSyncService {
 
           console.log(`📁 Syncing folder ${folderName} with ${totalMessages} messages`);
 
-          // Get existing message IDs to avoid duplicates
-          const existingMessages = await this.getExistingMessageIds(folderName);
+          // Get the last sync date for incremental sync
+          const lastSyncDate = await this.getLastSyncDate(folderName);
+          let messagesToFetch: number[] = [];
           let newMessageCount = 0;
 
-          const fetch = this.imap.seq.fetch('1:*', {
-            bodies: 'HEADER.FIELDS (MESSAGE-ID)',
-            struct: true,
-          });
-
-          const messagesToFetch: number[] = [];
-          
-          fetch.on('message', (msg, seqno) => {
-            msg.on('body', (stream, info) => {
-              let buffer = '';
-              stream.on('data', (chunk) => {
-                buffer += chunk.toString('ascii');
+          if (lastSyncDate) {
+            console.log(`🔄 Incremental sync: looking for messages since ${lastSyncDate.toISOString()}`);
+            
+            // Use IMAP SEARCH to find messages since last sync
+            const searchCriteria = ['SINCE', lastSyncDate];
+            
+            try {
+              const searchResults = await new Promise<number[]>((resolve, reject) => {
+                this.imap.search(searchCriteria, (err, results) => {
+                  if (err) reject(err);
+                  else resolve(results || []);
+                });
               });
-              
-              stream.once('end', () => {
-                const messageId = this.extractMessageId(buffer);
-                if (messageId && !existingMessages.has(messageId)) {
-                  messagesToFetch.push(seqno);
-                }
-              });
-            });
-          });
 
-          fetch.once('end', async () => {
-            if (messagesToFetch.length === 0) {
-              console.log(`📁 No new messages in folder ${folderName}`);
-              resolve(0);
-              return;
+              console.log(`📬 Found ${searchResults.length} messages since last sync`);
+
+              if (searchResults.length === 0) {
+                console.log(`📁 No new messages in folder ${folderName} since last sync`);
+                resolve(0);
+                return;
+              }
+
+              messagesToFetch = searchResults;
+            } catch (searchError) {
+              console.warn(`⚠️ SEARCH failed, falling back to full header check:`, searchError);
+              // Fall back to the original method
+              messagesToFetch = await this.getNewMessagesFullCheck(folderName, totalMessages);
             }
+          } else {
+            console.log(`🆕 First sync for folder ${folderName}, checking all messages`);
+            messagesToFetch = await this.getNewMessagesFullCheck(folderName, totalMessages);
+          }
 
-            console.log(`📥 Fetching ${messagesToFetch.length} new messages from ${folderName}`);
+          if (messagesToFetch.length === 0) {
+            console.log(`📁 No new messages to sync in folder ${folderName}`);
+            resolve(0);
+            return;
+          }
 
-            // Fetch full messages in batches
-            const batchSize = 50;
-            for (let i = 0; i < messagesToFetch.length; i += batchSize) {
-              const batch = messagesToFetch.slice(i, i + batchSize);
-              const count = await this.fetchMessageBatch(batch, folderName);
-              newMessageCount += count;
-              
-              // Small delay to prevent overwhelming the server
-              await new Promise(resolve => setTimeout(resolve, 100));
-            }
+          console.log(`📥 Fetching ${messagesToFetch.length} new messages from ${folderName}`);
 
-            resolve(newMessageCount);
-          });
+          // Fetch full messages in batches
+          const batchSize = 50;
+          for (let i = 0; i < messagesToFetch.length; i += batchSize) {
+            const batch = messagesToFetch.slice(i, i + batchSize);
+            const count = await this.fetchMessageBatch(batch, folderName);
+            newMessageCount += count;
+            
+            // Small delay to prevent overwhelming the server
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
 
-          fetch.once('error', reject);
+          resolve(newMessageCount);
         } catch (error) {
           reject(error);
         }
       });
+    });
+  }
+
+  private async getLastSyncDate(folderName: string): Promise<Date | null> {
+    try {
+      const result = await this.accountPrisma.$queryRaw<Array<{ lastDate: string }>>`
+        SELECT MAX(date) as lastDate FROM emails WHERE folder = ${folderName}
+      `;
+      return result?.[0]?.lastDate ? new Date(result[0].lastDate) : null;
+    } catch (error) {
+      console.warn(`⚠️ Could not get last sync date for folder ${folderName}:`, error);
+      return null;
+    }
+  }
+
+  private async getNewMessagesFullCheck(folderName: string, totalMessages: number): Promise<number[]> {
+    // Get existing message IDs to avoid duplicates
+    const existingMessages = await this.getExistingMessageIds(folderName);
+
+    return new Promise((resolve, reject) => {
+      const fetch = this.imap.seq.fetch('1:*', {
+        bodies: 'HEADER.FIELDS (MESSAGE-ID)',
+        struct: true,
+      });
+
+      const messagesToFetch: number[] = [];
+      
+      fetch.on('message', (msg, seqno) => {
+        msg.on('body', (stream, info) => {
+          let buffer = '';
+          stream.on('data', (chunk) => {
+            buffer += chunk.toString('ascii');
+          });
+          
+          stream.once('end', () => {
+            const messageId = this.extractMessageId(buffer);
+            if (messageId && !existingMessages.has(messageId)) {
+              messagesToFetch.push(seqno);
+            }
+          });
+        });
+      });
+
+      fetch.once('end', () => {
+        resolve(messagesToFetch);
+      });
+
+      fetch.once('error', reject);
     });
   }
 
@@ -416,6 +471,39 @@ export class ImapSyncService {
     return `c${timestamp}${randomPart}`;
   }
 
+  async incrementalSync(): Promise<{ totalMessages: number; errors: string[] }> {
+    const errors: string[] = [];
+    let totalMessages = 0;
+
+    try {
+      await this.connect();
+      await this.initializeAccountDatabase();
+      
+      const folders = await this.getFolders();
+      console.log(`📁 Found ${folders.length} folders for incremental sync of account ${this.accountId}`);
+
+      for (const folder of folders) {
+        try {
+          const messageCount = await this.syncFolder(folder);
+          totalMessages += messageCount;
+          console.log(`✅ Incrementally synced ${messageCount} new messages from folder ${folder}`);
+        } catch (error: any) {
+          const errorMsg = `Failed to sync folder ${folder}: ${error.message}`;
+          errors.push(errorMsg);
+          console.error(`❌ ${errorMsg}`);
+        }
+      }
+
+    } catch (error: any) {
+      errors.push(`Connection error: ${error.message}`);
+      console.error(`❌ IMAP incremental sync failed for account ${this.accountId}:`, error.message);
+    } finally {
+      await this.disconnect();
+    }
+
+    return { totalMessages, errors };
+  }
+
   async fullSync(): Promise<{ totalMessages: number; errors: string[] }> {
     const errors: string[] = [];
     let totalMessages = 0;
@@ -425,7 +513,7 @@ export class ImapSyncService {
       await this.initializeAccountDatabase();
       
       const folders = await this.getFolders();
-      console.log(`📁 Found ${folders.length} folders for account ${this.accountId}`);
+      console.log(`📁 Found ${folders.length} folders for full sync of account ${this.accountId}`);
 
       for (const folder of folders) {
         try {
@@ -441,7 +529,7 @@ export class ImapSyncService {
 
     } catch (error: any) {
       errors.push(`Connection error: ${error.message}`);
-      console.error(`❌ IMAP sync failed for account ${this.accountId}:`, error.message);
+      console.error(`❌ IMAP full sync failed for account ${this.accountId}:`, error.message);
     } finally {
       await this.disconnect();
     }

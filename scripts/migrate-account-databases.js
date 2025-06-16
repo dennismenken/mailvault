@@ -7,6 +7,7 @@ const path = require('path');
 
 const prisma = new PrismaClient();
 
+// Migration function kept for future use if needed
 async function migrateAccountDatabase(dbPath) {
   console.log(`🔧 Migrating account database: ${dbPath}`);
   
@@ -67,7 +68,7 @@ async function migrateAccountDatabase(dbPath) {
 }
 
 async function migrateAllAccountDatabases() {
-  console.log('🚀 Starting account database migration...');
+  console.log('🚀 Checking for account database migrations...');
   console.log('═'.repeat(50));
   
   try {
@@ -75,14 +76,33 @@ async function migrateAllAccountDatabases() {
     const accounts = await prisma.imapAccount.findMany();
     
     if (accounts.length === 0) {
-      console.log('📭 No IMAP accounts found to migrate');
+      console.log('📭 No IMAP accounts found');
+      console.log('ℹ️  New account databases will be created with the latest schema');
       return;
     }
     
-    console.log(`📧 Found ${accounts.length} account database(s) to migrate:`);
+    console.log(`📧 Found ${accounts.length} account database(s):`);
     accounts.forEach((account, index) => {
       console.log(`   ${index + 1}. ${account.email} -> ${account.dbPath}`);
     });
+    
+    // Since the application is not live yet, new account databases 
+    // are created with the final schema structure directly.
+    // Migration is only needed for existing databases from pre-release versions.
+    console.log('');
+    console.log('ℹ️  Account databases are created with the latest schema.');
+    console.log('ℹ️  Migration is only needed for pre-existing databases from development.');
+    console.log('ℹ️  To force migration of existing databases, run:');
+    console.log('   node scripts/migrate-account-databases.js --force');
+    
+    // Check if --force flag is provided
+    const forceFlag = process.argv.includes('--force');
+    if (!forceFlag) {
+      console.log('✅ Skipping migration - new databases use latest schema');
+      return;
+    }
+    
+    console.log('🔧 Force migration requested...');
     console.log('');
     
     // Migrate each account database
@@ -120,7 +140,7 @@ async function migrateAllAccountDatabases() {
 if (require.main === module) {
   migrateAllAccountDatabases()
     .then(() => {
-      console.log('\n✅ All migrations completed successfully!');
+      console.log('\n✅ Migration check completed successfully!');
       process.exit(0);
     })
     .catch((error) => {
@@ -129,4 +149,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { migrateAllAccountDatabases }; 
+module.exports = { migrateAllAccountDatabases, migrateAccountDatabase }; 
