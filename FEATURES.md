@@ -389,13 +389,21 @@ MAX_SYNC_ERRORS=5
 ## Technical Architecture
 
 - **Frontend**: Next.js with React
-- **Backend**: Node.js with Prisma ORM
+- **Backend**: Node.js 22 with Prisma ORM
 - **Database**: Main SQLite + per-account SQLite databases
 - **Email Sync**: IMAP with node-imap library
 - **Deployment**: Docker with separate web and sync containers
 - **Authentication**: NextAuth.js with database sessions
+- **Runtime**: Node.js ≥22.0.0, npm ≥10.0.0
 
 ## Recent Improvements
+
+### Node.js 22 Upgrade (Latest)
+- **🚀 Runtime Upgrade**: Updated to Node.js 22 for better performance and security
+- **📦 Dependencies**: All npm packages updated to latest compatible versions
+- **🐳 Docker Images**: Both web and sync containers now use Node.js 22-alpine
+- **🔒 Security**: All security vulnerabilities resolved
+- **⚡ Performance**: Better V8 engine performance and modern JavaScript features
 
 ### Sync Performance (Latest)
 - **70-90% reduction** in sync time for regular operations

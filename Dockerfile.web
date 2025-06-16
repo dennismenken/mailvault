@@ -1,5 +1,5 @@
 # Web Service Dockerfile
-FROM node:18-alpine AS base
+FROM node:22-alpine AS base
 
 # Install bash and su-exec for entrypoint scripts
 RUN apk add --no-cache bash su-exec
