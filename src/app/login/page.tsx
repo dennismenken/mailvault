@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Mail } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function LoginPage() {
@@ -43,7 +44,10 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl text-center">Mail Vault</CardTitle>
+          <CardTitle className="text-2xl text-center flex items-center justify-center">
+            <Mail className="h-8 w-8 text-blue-600 mr-3" />
+            Mail Vault
+          </CardTitle>
           <CardDescription className="text-center">
             Sign in to access your email archive
           </CardDescription>
@@ -72,7 +76,7 @@ export default function LoginPage() {
               />
             </div>
           </CardContent>
-          <CardFooter>
+          <CardFooter className="pt-6">
             <Button type="submit" className="w-full" disabled={isLoading}>
               {isLoading ? 'Signing in...' : 'Sign In'}
             </Button>
