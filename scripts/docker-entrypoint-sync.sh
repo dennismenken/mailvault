@@ -52,6 +52,17 @@ check_prisma_client() {
     fi
 }
 
+# Function to run account database migrations
+run_account_migrations() {
+    echo "🔄 Running account database migrations..."
+    
+    if node scripts/migrate-account-databases.js; then
+        echo "✅ Account database migrations completed"
+    else
+        echo "⚠️ Account database migrations failed (this is normal if no accounts exist)"
+    fi
+}
+
 # Main execution
 main() {
     echo "🏁 Starting Mail Vault Sync Service setup..."
@@ -64,6 +75,9 @@ main() {
     
     # Wait for main database (created by web service)
     wait_for_main_database
+    
+    # Run account database migrations
+    run_account_migrations
     
     echo "✅ Sync service setup completed!"
     echo "🚀 Starting sync service: $@"
