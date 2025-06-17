@@ -49,6 +49,7 @@ model ImapAccount {
 model Email {
   id             String    @id @default(cuid())
   messageId      String    @unique
+  uid            Int?      // IMAP UID for efficient sync
   subject        String?
   fromAddress    String?
   fromName       String?
@@ -75,4 +76,18 @@ model Email {
   @@index([subject])
   @@index([hasAttachments])
   @@index([contentType])
+  @@index([folder, uid])
+}
+
+// This model tracks sync state per folder for each IMAP account
+model SyncState {
+  id           String    @id @default(cuid())
+  folder       String    @unique
+  uidValidity  Int?      // IMAP UIDVALIDITY value
+  highestUid   Int       @default(0) // Highest UID synced
+  lastSyncAt   DateTime? // Last successful sync
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("sync_state")
 }

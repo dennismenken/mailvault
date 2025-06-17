@@ -153,6 +153,7 @@ class ImapSyncService {
         CREATE TABLE IF NOT EXISTS emails (
           id TEXT PRIMARY KEY,
           messageId TEXT UNIQUE NOT NULL,
+          uid INTEGER,
           subject TEXT,
           fromAddress TEXT,
           fromName TEXT,
@@ -174,6 +175,19 @@ class ImapSyncService {
         )
       `;
 
+      // Create sync_state table
+      const createSyncStateSQL = `
+        CREATE TABLE IF NOT EXISTS sync_state (
+          id TEXT PRIMARY KEY,
+          folder TEXT UNIQUE NOT NULL,
+          uidValidity INTEGER,
+          highestUid INTEGER NOT NULL DEFAULT 0,
+          lastSyncAt DATETIME,
+          createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `;
+
       // Create indexes for better performance
       const indexes = [
         'CREATE INDEX IF NOT EXISTS idx_emails_folder ON emails(folder)',
@@ -182,12 +196,21 @@ class ImapSyncService {
         'CREATE INDEX IF NOT EXISTS idx_emails_subject ON emails(subject)',
         'CREATE INDEX IF NOT EXISTS idx_emails_messageid ON emails(messageId)',
         'CREATE INDEX IF NOT EXISTS idx_emails_has_attachments ON emails(hasAttachments)',
-        'CREATE INDEX IF NOT EXISTS idx_emails_content_type ON emails(contentType)'
+        'CREATE INDEX IF NOT EXISTS idx_emails_content_type ON emails(contentType)',
+        'CREATE INDEX IF NOT EXISTS idx_emails_folder_uid ON emails(folder, uid)'
       ];
 
       // Execute schema creation
       await new Promise((resolve, reject) => {
         this.db.run(createTableSQL, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      // Create sync_state table
+      await new Promise((resolve, reject) => {
+        this.db.run(createSyncStateSQL, (err) => {
           if (err) reject(err);
           else resolve();
         });
@@ -280,6 +303,50 @@ class ImapSyncService {
     }
   }
 
+  async getSyncState(folderName) {
+    try {
+      return new Promise((resolve, reject) => {
+        this.db.get(
+          'SELECT * FROM sync_state WHERE folder = ?',
+          [folderName],
+          (err, row) => {
+            if (err) {
+              console.warn(`⚠️ Could not get sync state for folder ${folderName}:`, err);
+              resolve(null);
+            } else {
+              resolve(row);
+            }
+          }
+        );
+      });
+    } catch (error) {
+      console.warn(`⚠️ Could not get sync state for folder ${folderName}:`, error);
+      return null;
+    }
+  }
+
+  async updateSyncState(folderName, uidValidity, highestUid) {
+    return new Promise((resolve, reject) => {
+      const id = require('crypto').randomBytes(16).toString('hex');
+      const now = new Date().toISOString();
+      
+      this.db.run(
+        `INSERT INTO sync_state (id, folder, uidValidity, highestUid, lastSyncAt, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(folder) DO UPDATE SET
+         uidValidity = excluded.uidValidity,
+         highestUid = excluded.highestUid,
+         lastSyncAt = excluded.lastSyncAt,
+         updatedAt = excluded.updatedAt`,
+        [id, folderName, uidValidity, highestUid, now, now, now],
+        (err) => {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+  }
+
   async syncFolderAttempt(folderName) {
     return new Promise((resolve, reject) => {
       this.imap.openBox(folderName, true, async (err, box) => {
@@ -290,49 +357,87 @@ class ImapSyncService {
 
         try {
           const totalMessages = box.messages.total;
+          const uidValidity = box.uidvalidity;
+          
           if (totalMessages === 0) {
             console.log(`📁 Folder ${folderName} is empty`);
             resolve(0);
             return;
           }
 
-          console.log(`📁 Syncing folder ${folderName} with ${totalMessages} messages`);
+          console.log(`📁 Syncing folder ${folderName} with ${totalMessages} messages (UIDVALIDITY: ${uidValidity})`);
 
-          // Get the last sync date for incremental sync
-          const lastSyncDate = await this.getLastSyncDate(folderName);
+          // Get the sync state for this folder
+          const syncState = await this.getSyncState(folderName);
           let messagesToFetch = [];
           let newMessageCount = 0;
+          let needFullSync = false;
 
-          if (lastSyncDate) {
-            console.log(`🔄 Incremental sync: looking for messages since ${lastSyncDate.toISOString()}`);
+          // Check if we need a full sync due to UIDVALIDITY change
+          if (syncState && syncState.uidValidity && syncState.uidValidity !== uidValidity) {
+            console.log(`⚠️ UIDVALIDITY changed from ${syncState.uidValidity} to ${uidValidity}. Full sync required.`);
+            needFullSync = true;
+          }
+
+          if (!needFullSync && syncState && syncState.highestUid > 0) {
+            console.log(`🔄 Incremental sync: looking for messages with UID > ${syncState.highestUid}`);
             
-            // Use IMAP SEARCH to find messages since last sync
-            const searchCriteria = ['SINCE', lastSyncDate];
-            
+            // Use UID FETCH to get only new messages
             try {
-              const searchResults = await new Promise((resolve, reject) => {
-                this.imap.search(searchCriteria, (err, results) => {
-                  if (err) reject(err);
-                  else resolve(results || []);
+              const fetchRange = `${syncState.highestUid + 1}:*`;
+              console.log(`🔍 Fetching UID range: ${fetchRange}`);
+              
+              messagesToFetch = await new Promise((resolve, reject) => {
+                const messages = [];
+                const fetch = this.imap.fetch(fetchRange, { 
+                  bodies: 'HEADER.FIELDS (MESSAGE-ID)', 
+                  struct: true 
+                });
+                
+                fetch.on('message', (msg, seqno) => {
+                  msg.on('attributes', (attrs) => {
+                    messages.push(attrs.uid);
+                  });
+                });
+                
+                fetch.on('error', (err) => {
+                  // If the range is empty, it's not an error
+                  if (err.message.includes('Nothing to fetch')) {
+                    resolve([]);
+                  } else {
+                    reject(err);
+                  }
+                });
+                
+                fetch.on('end', () => {
+                  resolve(messages);
                 });
               });
 
-              console.log(`📬 Found ${searchResults.length} messages since last sync`);
-
-              if (searchResults.length === 0) {
-                console.log(`📁 No new messages in folder ${folderName} since last sync`);
-                resolve(0);
-                return;
+              console.log(`📬 Found ${messagesToFetch.length} new messages with UIDs > ${syncState.highestUid}`);
+            } catch (uidError) {
+              console.warn(`⚠️ UID FETCH failed, falling back to date-based sync:`, uidError.message);
+              // Fall back to date-based sync
+              const lastSyncDate = await this.getLastSyncDate(folderName);
+              if (lastSyncDate) {
+                const searchCriteria = ['SINCE', lastSyncDate];
+                try {
+                  messagesToFetch = await new Promise((resolve, reject) => {
+                    this.imap.search(searchCriteria, (err, results) => {
+                      if (err) reject(err);
+                      else resolve(results || []);
+                    });
+                  });
+                } catch (searchError) {
+                  console.warn(`⚠️ SEARCH also failed, falling back to full check:`, searchError.message);
+                  messagesToFetch = await this.getNewMessagesFullCheck(folderName, totalMessages);
+                }
+              } else {
+                messagesToFetch = await this.getNewMessagesFullCheck(folderName, totalMessages);
               }
-
-              messagesToFetch = searchResults;
-            } catch (searchError) {
-              console.warn(`⚠️ SEARCH failed, falling back to full header check:`, searchError.message);
-              // Fall back to the original method
-              messagesToFetch = await this.getNewMessagesFullCheck(folderName, totalMessages);
             }
           } else {
-            console.log(`🆕 First sync for folder ${folderName}, checking all messages`);
+            console.log(`🆕 First sync or full sync required for folder ${folderName}, checking all messages`);
             messagesToFetch = await this.getNewMessagesFullCheck(folderName, totalMessages);
           }
 
@@ -379,6 +484,30 @@ class ImapSyncService {
                 console.error(`❌ Maximum errors reached (${this.maxErrors}). Stopping sync.`);
                 break;
               }
+            }
+          }
+
+          // Update sync state with highest UID if we processed messages
+          if (newMessageCount > 0 && uidValidity) {
+            try {
+              // Get the highest UID from the database for this folder
+              const highestUid = await new Promise((resolve, reject) => {
+                this.db.get(
+                  'SELECT MAX(uid) as maxUid FROM emails WHERE folder = ? AND uid IS NOT NULL',
+                  [folderName],
+                  (err, row) => {
+                    if (err) reject(err);
+                    else resolve(row?.maxUid || 0);
+                  }
+                );
+              });
+              
+              if (highestUid > 0) {
+                await this.updateSyncState(folderName, uidValidity, highestUid);
+                console.log(`📊 Updated sync state: folder=${folderName}, uidValidity=${uidValidity}, highestUid=${highestUid}`);
+              }
+            } catch (error) {
+              console.warn(`⚠️ Could not update sync state:`, error.message);
             }
           }
 
@@ -576,6 +705,7 @@ class ImapSyncService {
     
     return {
       messageId,
+      uid: attrs?.uid || null,
       subject: parsed.subject || '',
       fromAddress: parsed.from?.value?.[0]?.address || '',
       fromName: parsed.from?.value?.[0]?.name || '',
@@ -607,15 +737,16 @@ class ImapSyncService {
       return new Promise((resolve, reject) => {
         const sql = `
           INSERT OR REPLACE INTO emails (
-            id, messageId, subject, fromAddress, fromName, toAddresses, 
+            id, messageId, uid, subject, fromAddress, fromName, toAddresses, 
             bodyText, bodyHtml, contentType, hasAttachments, attachmentsPath,
             attachments, folder, date, size, createdAt
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         `;
         
         const params = [
           cuid,
           emailData.messageId,
+          emailData.uid,
           emailData.subject,
           emailData.fromAddress,
           emailData.fromName,
