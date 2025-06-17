@@ -127,20 +127,23 @@ async function migrateAccountDatabase(dbPath) {
         // Find migrations to apply
         const migrationsToApply = MIGRATIONS.filter(m => !appliedMigrations.includes(m.id));
         
+        let result = { migrationsApplied: 0 };
+        
         if (migrationsToApply.length === 0) {
-          console.log(`✅ Database is up to date (${appliedMigrations.length} migrations applied)`);
+          console.log(`✅ Database is up to date (${appliedMigrations.length} migrations already applied)`);
         } else {
           console.log(`📊 Found ${migrationsToApply.length} migrations to apply`);
           
           // Apply each migration in order
           for (const migration of migrationsToApply) {
             await runMigration(db, migration);
+            result.migrationsApplied++;
           }
         }
         
         db.close((err) => {
           if (err) reject(err);
-          else resolve();
+          else resolve(result);
         });
       } catch (error) {
         db.close();
@@ -169,26 +172,13 @@ async function migrateAllAccountDatabases() {
       console.log(`   ${index + 1}. ${account.email} -> ${account.dbPath}`);
     });
     
-    // Since the application is not live yet, new account databases 
-    // are created with the final schema structure directly.
-    // Migration is only needed for existing databases from pre-release versions.
     console.log('');
-    console.log('ℹ️  Account databases are created with the latest schema.');
-    console.log('ℹ️  Migration is only needed for pre-existing databases from development.');
-    console.log('ℹ️  To force migration of existing databases, run:');
-    console.log('   node scripts/migrate-account-databases.js --force');
-    
-    // Check if --force flag is provided
-    const forceFlag = process.argv.includes('--force');
-    if (!forceFlag) {
-      console.log('✅ Skipping migration - new databases use latest schema');
-      return;
-    }
-    
-    console.log('🔧 Force migration requested...');
-    console.log('');
+    console.log('🔍 Checking each database for pending migrations...');
     
     // Migrate each account database
+    let migratedCount = 0;
+    let upToDateCount = 0;
+    
     for (const account of accounts) {
       try {
         const absolutePath = path.resolve(process.cwd(), account.dbPath);
@@ -201,15 +191,24 @@ async function migrateAllAccountDatabases() {
           continue;
         }
         
-        await migrateAccountDatabase(absolutePath);
-        console.log(`✅ Migration completed for ${account.email}\n`);
+        const result = await migrateAccountDatabase(absolutePath);
+        if (result && result.migrationsApplied > 0) {
+          migratedCount++;
+        } else {
+          upToDateCount++;
+        }
         
       } catch (error) {
         console.error(`❌ Migration failed for ${account.email}:`, error.message);
       }
     }
     
-    console.log('🎉 Account database migration completed!');
+    console.log('');
+    console.log('📊 Migration Summary:');
+    console.log(`   • Databases migrated: ${migratedCount}`);
+    console.log(`   • Already up to date: ${upToDateCount}`);
+    console.log('');
+    console.log('🎉 Account database migration check completed!');
     
   } catch (error) {
     console.error('💥 Migration process failed:', error);

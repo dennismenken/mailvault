@@ -216,10 +216,40 @@ class ImapSyncService {
         });
       });
 
+      // Create migrations_applied table for tracking
+      const createMigrationsSQL = `
+        CREATE TABLE IF NOT EXISTS migrations_applied (
+          id TEXT PRIMARY KEY,
+          applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `;
+      
+      await new Promise((resolve, reject) => {
+        this.db.run(createMigrationsSQL, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
       // Execute index creation
       for (const indexSql of indexes) {
         await new Promise((resolve, reject) => {
           this.db.run(indexSql, (err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+      }
+      
+      // Mark initial schema as applied (both migrations)
+      const markInitialMigrations = [
+        `INSERT OR IGNORE INTO migrations_applied (id) VALUES ('001_add_content_type')`,
+        `INSERT OR IGNORE INTO migrations_applied (id) VALUES ('002_add_uid_sync_state')`
+      ];
+      
+      for (const sql of markInitialMigrations) {
+        await new Promise((resolve, reject) => {
+          this.db.run(sql, (err) => {
             if (err) reject(err);
             else resolve();
           });
