@@ -51,7 +51,7 @@ async function syncImapAccount(accountId, useIncrementalSync = true) {
 
 async function syncAllAccounts(forceFullSync = false) {
   const syncType = forceFullSync ? 'full' : 'incremental';
-  console.log(`🔄 Starting ${syncType} email synchronization...`);
+  console.log(`[sync] Starting ${syncType} email synchronization...`);
   console.log('═'.repeat(60));
   const startTime = Date.now();
 
@@ -70,19 +70,19 @@ async function syncAllAccounts(forceFullSync = false) {
     });
 
     if (accounts.length === 0) {
-      console.log('📭 No IMAP accounts found to sync');
+      console.log('[sync] No IMAP accounts found to sync');
       return;
     }
 
-    console.log(`📧 Found ${accounts.length} IMAP account(s) to sync:`);
+    console.log(`[sync] Found ${accounts.length} IMAP account(s) to sync:`);
     accounts.forEach((account, index) => {
       console.log(`   ${index + 1}. ${account.email} (${account.user.email})`);
       console.log(`      Server: ${account.imapServer}:${account.imapPort} (${account.useTls ? 'TLS' : 'No TLS'})`);
       console.log(`      Database: ${account.dbPath}`);
     });
-    console.log(`\n📝 Sync mode: ${syncType.toUpperCase()}`);
+    console.log(`\n[sync] Sync mode: ${syncType.toUpperCase()}`);
     if (!forceFullSync) {
-      console.log('💡 Tip: Use --full flag for complete synchronization of all messages');
+      console.log('[sync] Tip: Use --full flag for complete synchronization of all messages');
     }
     console.log('');
 
@@ -94,7 +94,7 @@ async function syncAllAccounts(forceFullSync = false) {
     for (let i = 0; i < accounts.length; i++) {
       const account = accounts[i];
       console.log(`\n${'='.repeat(80)}`);
-      console.log(`🔄 ${syncType.toUpperCase()} SYNC ${i + 1}/${accounts.length}: ${account.email}`);
+      console.log(`[sync] ${syncType.toUpperCase()} SYNC ${i + 1}/${accounts.length}: ${account.email}`);
       console.log(`   User: ${account.user.email}`);
       console.log(`   Server: ${account.imapServer}:${account.imapPort} (${account.useTls ? 'TLS' : 'No TLS'})`);
       console.log(`${'='.repeat(80)}`);
@@ -111,13 +111,13 @@ async function syncAllAccounts(forceFullSync = false) {
         totalProcessedMessages += result.processedMessages || 0;
         totalNewMessages += result.newEmails || 0;
         
-        console.log(`\n✅ ACCOUNT SYNC COMPLETED: ${account.email}`);
-        console.log(`   📧 New emails: ${result.newEmails}`);
-        console.log(`   📊 Processed messages: ${result.processedMessages}`);
-        console.log(`   ⏱️  Time elapsed: ${result.timeElapsed}s`);
+        console.log(`\n[ok] ACCOUNT SYNC COMPLETED: ${account.email}`);
+        console.log(`   [sync] New emails: ${result.newEmails}`);
+        console.log(`   [sync] Processed messages: ${result.processedMessages}`);
+        console.log(`   [sync] Time elapsed: ${result.timeElapsed}s`);
         
         if (result.errors && result.errors.length > 0) {
-          console.log(`   ⚠️  ${result.errors.length} errors occurred:`);
+          console.log(`   [warn] ${result.errors.length} errors occurred:`);
           result.errors.slice(0, 5).forEach((error, idx) => {
             console.log(`      ${idx + 1}. ${error}`);
           });
@@ -127,7 +127,7 @@ async function syncAllAccounts(forceFullSync = false) {
         }
         
       } catch (error) {
-        console.log(`\n❌ ACCOUNT SYNC FAILED: ${account.email}`);
+        console.log(`\n[err] ACCOUNT SYNC FAILED: ${account.email}`);
         console.log(`   Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
         
         results.push({
@@ -140,7 +140,7 @@ async function syncAllAccounts(forceFullSync = false) {
       
       // Small delay between accounts to prevent server overload
       if (i < accounts.length - 1) {
-        console.log(`\n⏸️  Waiting 5 seconds before next account...`);
+        console.log(`\n[sync] Waiting 5 seconds before next account...`);
         await new Promise(resolve => setTimeout(resolve, 5000));
       }
     }
@@ -148,25 +148,25 @@ async function syncAllAccounts(forceFullSync = false) {
     // Final Summary
     const totalTime = Math.round((Date.now() - startTime) / 1000);
     console.log(`\n${'█'.repeat(80)}`);
-    console.log(`📊 FINAL ${syncType.toUpperCase()} SYNCHRONIZATION SUMMARY`);
+    console.log(`[sync] FINAL ${syncType.toUpperCase()} SYNCHRONIZATION SUMMARY`);
     console.log(`${'█'.repeat(80)}`);
     
     const successful = results.filter(r => r.success);
     const failed = results.filter(r => !r.success);
     
-    console.log(`✅ Successful accounts: ${successful.length}`);
-    console.log(`❌ Failed accounts: ${failed.length}`);
-    console.log(`📧 Total new emails synced: ${totalNewMessages}`);
-    console.log(`📊 Total messages processed: ${totalProcessedMessages}`);
-    console.log(`⏱️  Total time elapsed: ${Math.floor(totalTime / 60)}m ${totalTime % 60}s`);
+    console.log(`[ok] Successful accounts: ${successful.length}`);
+    console.log(`[err] Failed accounts: ${failed.length}`);
+    console.log(`[sync] Total new emails synced: ${totalNewMessages}`);
+    console.log(`[sync] Total messages processed: ${totalProcessedMessages}`);
+    console.log(`[sync] Total time elapsed: ${Math.floor(totalTime / 60)}m ${totalTime % 60}s`);
     
     if (totalNewMessages > 0) {
       const avgSpeed = Math.round(totalProcessedMessages / totalTime);
-      console.log(`🚀 Average processing speed: ${avgSpeed} messages/second`);
+      console.log(`[sync] Average processing speed: ${avgSpeed} messages/second`);
     }
 
     if (successful.length > 0) {
-      console.log(`\n✅ Successfully synced accounts:`);
+      console.log(`\n[ok] Successfully synced accounts:`);
       successful.forEach((result, idx) => {
         const timeStr = result.timeElapsed ? `${result.timeElapsed}s` : 'N/A';
         console.log(`   ${idx + 1}. ${result.account} - ${result.newEmails} new emails (${timeStr})`);
@@ -174,19 +174,19 @@ async function syncAllAccounts(forceFullSync = false) {
     }
 
     if (failed.length > 0) {
-      console.log(`\n❌ Failed accounts:`);
+      console.log(`\n[err] Failed accounts:`);
       failed.forEach((result, idx) => {
         console.log(`   ${idx + 1}. ${result.account} (${result.user}): ${result.error}`);
       });
     }
 
-    console.log(`\n💾 All emails are stored in separate SQLite databases per account`);
-    console.log(`🔍 Use the web interface to search and browse synced emails`);
-    console.log(`🔄 Background service uses incremental sync every ${process.env.SYNC_INTERVAL_MINUTES || 30} minutes`);
+    console.log(`\n[sync] All emails are stored in separate SQLite databases per account`);
+    console.log(`[sync] Use the web interface to search and browse synced emails`);
+    console.log(`[sync] Background service uses incremental sync every ${process.env.SYNC_INTERVAL_MINUTES || 30} minutes`);
     console.log(`${'█'.repeat(80)}`);
 
   } catch (error) {
-    console.error('❌ Sync process failed:', error instanceof Error ? error.message : 'Unknown error');
+    console.error('[err] Sync process failed:', error instanceof Error ? error.message : 'Unknown error');
     process.exit(1);
   } finally {
     await prisma.$disconnect();
@@ -202,11 +202,11 @@ if (require.main === module) {
   syncAllAccounts(forceFullSync)
     .then(() => {
       const syncType = forceFullSync ? 'full' : 'incremental';
-      console.log(`\n🎉 All ${syncType} synchronization tasks completed successfully!`);
+      console.log(`\n[sync] All ${syncType} synchronization tasks completed successfully!`);
       process.exit(0);
     })
     .catch((error) => {
-      console.error('\n💥 Sync failed:', error);
+      console.error('\n[err] Sync failed:', error);
       process.exit(1);
     });
 } 

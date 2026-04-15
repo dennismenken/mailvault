@@ -43,18 +43,14 @@ export function ThemeToggle() {
           <Sun className="size-4" />
           Light
           {theme === "light" && (
-            <span className="ml-auto text-xs text-muted-foreground">
-              {active === "light" ? "active" : ""}
-            </span>
+            <span className="ml-auto text-xs text-muted-foreground">active</span>
           )}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setTheme("dark")}>
           <Moon className="size-4" />
           Dark
           {theme === "dark" && (
-            <span className="ml-auto text-xs text-muted-foreground">
-              {active === "dark" ? "active" : ""}
-            </span>
+            <span className="ml-auto text-xs text-muted-foreground">active</span>
           )}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => setTheme("system")}>
@@ -62,7 +58,7 @@ export function ThemeToggle() {
           System
           {theme === "system" && (
             <span className="ml-auto text-xs text-muted-foreground">
-              auto
+              {active ? `auto · ${active}` : "auto"}
             </span>
           )}
         </DropdownMenuItem>

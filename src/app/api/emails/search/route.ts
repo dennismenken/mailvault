@@ -14,6 +14,7 @@ interface SearchParams {
   accountId?: string;
   page?: number;
   limit?: number;
+  hasAttachments?: boolean;
 }
 
 interface EmailResult {
@@ -69,6 +70,7 @@ export async function GET(request: NextRequest) {
       accountId: searchParams.get('accountId') || undefined,
       page: parseInt(searchParams.get('page') || '1'),
       limit: Math.min(parseInt(searchParams.get('limit') || '50'), 100),
+      hasAttachments: searchParams.get('hasAttachments') === '1' ? true : undefined,
     };
 
     // Check if this is a request for full content of a specific email
@@ -227,6 +229,10 @@ async function getEmailCount(
     whereParams.push(new Date(params.dateTo).toISOString());
   }
 
+  if (params.hasAttachments) {
+    whereClause += ' AND hasAttachments = 1';
+  }
+
   try {
     const countQuery = `
       SELECT COUNT(*) as count
@@ -277,6 +283,10 @@ async function searchInAccountDatabase(
   if (params.dateTo) {
     whereClause += ' AND date <= ?';
     whereParams.push(new Date(params.dateTo).toISOString());
+  }
+
+  if (params.hasAttachments) {
+    whereClause += ' AND hasAttachments = 1';
   }
 
   try {

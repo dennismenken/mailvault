@@ -9,27 +9,14 @@ import {
   Users,
   Settings,
   Plus,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  AlertTriangle,
-  ChevronLeft,
-  ChevronRight,
-  Download,
-  Paperclip,
   RefreshCw,
-  X,
   Inbox,
-  FileText,
-  Mail,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppShell } from "@/components/app/app-shell";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -49,144 +36,25 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-
-interface EmailResult {
-  id: string;
-  messageId: string;
-  subject?: string;
-  fromAddress?: string;
-  fromName?: string;
-  toAddresses?: string[];
-  date?: string;
-  folder: string;
-  bodyText?: string;
-  bodyHtml?: string;
-  contentType?: string;
-  hasAttachments?: boolean;
-  attachmentsPath?: string;
-  accountEmail: string;
-  size?: number;
-}
-
-interface AttachmentInfo {
-  filename: string;
-  originalName: string;
-  size: number;
-  contentType: string;
-  downloadUrl: string;
-}
-
-interface SearchResponse {
-  emails: EmailResult[];
-  totalCount: number;
-  page: number;
-  limit: number;
-  totalPages: number;
-}
-
-interface UserRecord {
-  id: string;
-  email: string;
-  name?: string;
-  createdAt: string;
-  _count: { imapAccounts: number };
-}
-
-interface ImapAccount {
-  id: string;
-  email: string;
-  imapServer: string;
-  imapPort: number;
-  useTls: boolean;
-  isActive: boolean;
-  syncEnabled: boolean;
-  lastSyncAt?: string;
-  errorMessage?: string;
-  errorCount: number;
-  createdAt: string;
-}
-
-const PAGE_SIZE = 20;
-
-function formatDate(value?: string) {
-  if (!value) return "Unknown";
-  try {
-    const d = new Date(value);
-    return d.toLocaleString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return "Invalid date";
-  }
-}
-
-function formatRelative(value?: string) {
-  if (!value) return "never";
-  const t = new Date(value).getTime();
-  if (Number.isNaN(t)) return "never";
-  const diff = Date.now() - t;
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(value).toLocaleDateString();
-}
-
-function formatSize(bytes?: number) {
-  if (!bytes && bytes !== 0) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function getInitials(name?: string, email?: string) {
-  const source = name?.trim() || email?.split("@")[0] || "?";
-  const parts = source.split(/[\s._-]+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
-function accountState(account: ImapAccount): {
-  label: string;
-  tone: "ok" | "warn" | "err" | "idle";
-} {
-  if (!account.isActive) return { label: "Inactive", tone: "err" };
-  if (!account.syncEnabled) return { label: "Paused", tone: "idle" };
-  if (account.errorCount > 0) return { label: "Errors", tone: "warn" };
-  return { label: "Active", tone: "ok" };
-}
-
-function StateDot({ tone }: { tone: "ok" | "warn" | "err" | "idle" }) {
-  const color =
-    tone === "ok"
-      ? "bg-emerald-500"
-      : tone === "warn"
-        ? "bg-amber-500"
-        : tone === "err"
-          ? "bg-red-500"
-          : "bg-muted-foreground/60";
-  return (
-    <span className="relative inline-flex">
-      <span className={cn("size-2 rounded-full", color)} />
-      {tone === "ok" && (
-        <span
-          className={cn(
-            "absolute inset-0 size-2 animate-ping rounded-full opacity-60",
-            color,
-          )}
-        />
-      )}
-    </span>
-  );
-}
+import {
+  type AttachmentInfo,
+  type EmailResult,
+  type ImapAccount,
+  type SearchResponse,
+  type UserRecord,
+  PAGE_SIZE,
+  accountState,
+  EmptyState,
+  formatDate,
+  formatRelative,
+  FormRow,
+  getInitials,
+  SettingsBlock,
+  SettingRow,
+  StateDot,
+} from "@/components/dashboard/shared";
+import { ResultsList } from "@/components/dashboard/results-list";
+import { DetailPane } from "@/components/dashboard/detail-pane";
 
 export default function DashboardPage() {
   const { data: session, status } = useSession();
@@ -237,13 +105,20 @@ export default function DashboardPage() {
   }, [status, router]);
 
   const handleSearch = useCallback(
-    async (query: string, page: number) => {
+    async (
+      query: string,
+      page: number,
+      filter: "all" | "attachments" = activeFilter,
+      account: string = accountFilter,
+    ) => {
       setIsLoading(true);
       try {
         const params = new URLSearchParams({
           ...(query && { query }),
           page: page.toString(),
           limit: PAGE_SIZE.toString(),
+          ...(filter === "attachments" && { hasAttachments: "1" }),
+          ...(account !== "all" && { accountId: account }),
         });
         const response = await fetch(`/api/emails/search?${params}`);
         if (!response.ok) throw new Error("search failed");
@@ -259,7 +134,7 @@ export default function DashboardPage() {
         setIsLoading(false);
       }
     },
-    [],
+    [activeFilter, accountFilter],
   );
 
   const loadUsers = useCallback(async () => {
@@ -431,18 +306,8 @@ export default function DashboardPage() {
     }
   };
 
-  // Client-side post-filter for chips (server search drives the page result set;
-  // chips refine within the returned page).
-  const filteredResults = useMemo(() => {
-    let list = searchResults;
-    if (activeFilter === "attachments") {
-      list = list.filter((e) => e.hasAttachments);
-    }
-    if (accountFilter !== "all") {
-      list = list.filter((e) => e.accountEmail === accountFilter);
-    }
-    return list;
-  }, [searchResults, activeFilter, accountFilter]);
+  // Filters are applied server-side via query params; results come back pre-filtered.
+  const filteredResults = searchResults;
 
   const accountHealth = useMemo(() => {
     const total = imapAccounts.length;
@@ -521,6 +386,8 @@ export default function DashboardPage() {
             <div className="relative flex items-center gap-3 px-4 py-3 sm:px-5">
               <Search className="size-4 text-muted-foreground" />
               <input
+                type="search"
+                aria-label="Search emails"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={onSearchKey}
@@ -556,7 +423,13 @@ export default function DashboardPage() {
               ).map((c) => (
                 <button
                   key={c.id}
-                  onClick={() => setActiveFilter(c.id)}
+                  type="button"
+                  aria-pressed={activeFilter === c.id}
+                  onClick={() => {
+                    setActiveFilter(c.id);
+                    setCurrentPage(1);
+                    handleSearch(searchQuery, 1, c.id, accountFilter);
+                  }}
                   className={cn(
                     "inline-flex h-7 items-center rounded-full border px-3 text-xs transition-colors",
                     activeFilter === c.id
@@ -572,7 +445,13 @@ export default function DashboardPage() {
                 Account
               </span>
               <button
-                onClick={() => setAccountFilter("all")}
+                type="button"
+                aria-pressed={accountFilter === "all"}
+                onClick={() => {
+                  setAccountFilter("all");
+                  setCurrentPage(1);
+                  handleSearch(searchQuery, 1, activeFilter, "all");
+                }}
                 className={cn(
                   "inline-flex h-7 items-center rounded-full border px-3 text-xs transition-colors",
                   accountFilter === "all"
@@ -585,10 +464,16 @@ export default function DashboardPage() {
               {imapAccounts.map((a) => (
                 <button
                   key={a.id}
-                  onClick={() => setAccountFilter(a.email)}
+                  type="button"
+                  aria-pressed={accountFilter === a.id}
+                  onClick={() => {
+                    setAccountFilter(a.id);
+                    setCurrentPage(1);
+                    handleSearch(searchQuery, 1, activeFilter, a.id);
+                  }}
                   className={cn(
                     "inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors",
-                    accountFilter === a.email
+                    accountFilter === a.id
                       ? "border-vault bg-vault-muted text-foreground"
                       : "border-border bg-background text-muted-foreground hover:text-foreground",
                   )}
@@ -997,436 +882,3 @@ export default function DashboardPage() {
     </AppShell>
   );
 }
-
-/* ---------------- Sub-components ---------------- */
-
-function ResultsList({
-  results,
-  isLoading,
-  totalCount,
-  currentPage,
-  totalPages,
-  onSelect,
-  selectedId,
-  onPage,
-}: {
-  results: EmailResult[];
-  isLoading: boolean;
-  totalCount: number;
-  currentPage: number;
-  totalPages: number;
-  onSelect: (e: EmailResult) => void;
-  selectedId?: string;
-  onPage: (page: number) => void;
-}) {
-  return (
-    <div className="rounded-xl border border-border/80 bg-card">
-      <div className="flex items-center justify-between border-b border-border/60 px-4 py-2.5 text-xs text-muted-foreground">
-        <span className="font-mono text-[10px] uppercase tracking-[0.18em]">
-          {totalCount > 0
-            ? `${totalCount} message${totalCount === 1 ? "" : "s"}`
-            : "No messages"}
-        </span>
-        <span className="font-mono text-[10px] uppercase tracking-[0.18em]">
-          Page {currentPage} / {Math.max(1, totalPages)}
-        </span>
-      </div>
-
-      {results.length === 0 ? (
-        <div className="p-10">
-          <EmptyState
-            icon={<Mail className="size-5" />}
-            title={isLoading ? "Loading vault" : "No emails to display"}
-            hint={
-              isLoading
-                ? "Reading from the archive."
-                : "Try a different search or import an account."
-            }
-          />
-        </div>
-      ) : (
-        <>
-          <ul className="divide-y divide-border/60">
-            {results.map((email) => {
-              const selected = selectedId === email.id;
-              return (
-                <li key={email.id}>
-                  <button
-                    onClick={() => onSelect(email)}
-                    className={cn(
-                      "group relative flex w-full items-start gap-3 px-4 py-3.5 text-left transition-colors",
-                      "hover:bg-secondary/50",
-                      selected && "bg-vault-muted/60",
-                    )}
-                  >
-                    <span
-                      aria-hidden
-                      className={cn(
-                        "absolute left-0 top-3.5 h-[calc(100%-1.75rem)] w-[2px] rounded-r",
-                        selected ? "bg-vault" : "bg-transparent",
-                      )}
-                    />
-                    <span className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-background text-[11px] font-medium text-foreground">
-                      {getInitials(email.fromName, email.fromAddress)}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline justify-between gap-3">
-                        <span className="truncate text-sm font-medium text-foreground">
-                          {email.fromName ||
-                            email.fromAddress ||
-                            "Unknown sender"}
-                        </span>
-                        <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-                          {formatRelative(email.date)}
-                        </span>
-                      </div>
-                      <div className="mt-0.5 truncate text-sm text-foreground/90">
-                        {email.subject || "(no subject)"}
-                      </div>
-                      {email.bodyText && (
-                        <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">
-                          {email.bodyText}
-                        </div>
-                      )}
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                        <Badge
-                          variant="secondary"
-                          className="h-5 rounded px-1.5 font-mono text-[10px] uppercase tracking-wider"
-                        >
-                          {email.folder}
-                        </Badge>
-                        <Badge
-                          variant="outline"
-                          className="h-5 rounded px-1.5 font-mono text-[10px] normal-case tracking-normal text-muted-foreground"
-                        >
-                          {email.accountEmail}
-                        </Badge>
-                        {email.hasAttachments && (
-                          <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-vault">
-                            <Paperclip className="size-3" />
-                            attach
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between gap-3 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={currentPage <= 1 || isLoading}
-                onClick={() => onPage(Math.max(1, currentPage - 1))}
-                className="h-8 gap-1.5"
-              >
-                <ChevronLeft className="size-3.5" />
-                Prev
-              </Button>
-              <span className="font-mono text-[10px] uppercase tracking-[0.18em]">
-                {(currentPage - 1) * PAGE_SIZE + 1}–
-                {Math.min(currentPage * PAGE_SIZE, totalCount)} of {totalCount}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={currentPage >= totalPages || isLoading}
-                onClick={() => onPage(Math.min(totalPages, currentPage + 1))}
-                className="h-8 gap-1.5"
-              >
-                Next
-                <ChevronRight className="size-3.5" />
-              </Button>
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-function DetailPane({
-  email,
-  isLoadingEmail,
-  attachments,
-  isLoadingAttachments,
-  onClose,
-  onDownload,
-}: {
-  email: EmailResult | null;
-  isLoadingEmail: boolean;
-  attachments: AttachmentInfo[];
-  isLoadingAttachments: boolean;
-  onClose: () => void;
-  onDownload: (a: AttachmentInfo) => void;
-}) {
-  if (!email) {
-    return (
-      <div className="hidden lg:block">
-        <div className="flex h-full min-h-[400px] items-center justify-center rounded-xl border border-dashed border-border/80 bg-card/50 p-10 text-center">
-          <div className="space-y-2">
-            <FileText className="mx-auto size-6 text-muted-foreground/70" />
-            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-              Select a message
-            </p>
-            <p className="text-sm text-muted-foreground">
-              Pick an email from the list to inspect its content.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <>
-      {/* Mobile overlay */}
-      <div
-        className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm lg:hidden"
-        onClick={onClose}
-      />
-      <article
-        className={cn(
-          "fixed inset-x-2 bottom-2 top-16 z-50 flex flex-col overflow-hidden rounded-xl border border-border/80 bg-card shadow-2xl",
-          "lg:static lg:inset-auto lg:z-auto lg:flex lg:shadow-none",
-        )}
-      >
-        <header className="flex items-start justify-between gap-3 border-b border-border/60 bg-background/40 px-5 py-4">
-          <div className="min-w-0">
-            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-              {email.folder} · {email.accountEmail}
-            </p>
-            <h3 className="mt-1 truncate text-base font-medium text-foreground">
-              {email.subject || "(no subject)"}
-            </h3>
-            <p className="mt-1 truncate text-sm text-muted-foreground">
-              From {email.fromName || email.fromAddress}
-            </p>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onClose}
-            aria-label="Close detail"
-          >
-            <X className="size-4" />
-          </Button>
-        </header>
-
-        <div className="flex-1 overflow-y-auto px-5 py-5">
-          {isLoadingEmail ? (
-            <div className="space-y-3">
-              <div className="h-3 w-1/3 animate-pulse rounded bg-secondary" />
-              <div className="h-3 w-2/3 animate-pulse rounded bg-secondary" />
-              <div className="mt-6 h-32 animate-pulse rounded bg-secondary" />
-            </div>
-          ) : (
-            <div className="space-y-5">
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg border border-border/60 bg-background/40 p-3 text-sm">
-                <DetailRow label="Date" value={formatDate(email.date)} />
-                <DetailRow
-                  label="Size"
-                  value={formatSize(email.size) || "—"}
-                />
-                <DetailRow
-                  label="Type"
-                  value={email.contentType || "PLAIN"}
-                />
-                <DetailRow
-                  label="Attachments"
-                  value={email.hasAttachments ? "yes" : "no"}
-                />
-              </dl>
-
-              {email.toAddresses && email.toAddresses.length > 0 && (
-                <div className="rounded-lg border border-border/60 bg-background/40 p-3 text-sm">
-                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-                    To
-                  </p>
-                  <p className="mt-1 break-words text-foreground">
-                    {email.toAddresses.join(", ")}
-                  </p>
-                </div>
-              )}
-
-              {email.hasAttachments && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-                      Attachments
-                    </p>
-                    {isLoadingAttachments && (
-                      <span className="text-xs text-muted-foreground">
-                        Loading
-                      </span>
-                    )}
-                  </div>
-                  {attachments.length > 0 ? (
-                    <ul className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border/60">
-                      {attachments.map((a, i) => (
-                        <li
-                          key={i}
-                          className="flex items-center justify-between gap-3 bg-background/40 px-3 py-2.5"
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium">
-                              {a.originalName}
-                            </p>
-                            <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-                              {formatSize(a.size)} · {a.contentType}
-                            </p>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => onDownload(a)}
-                            className="gap-1.5"
-                          >
-                            <Download className="size-3.5" />
-                            Save
-                          </Button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    !isLoadingAttachments && (
-                      <p className="rounded-lg border border-dashed border-border/60 px-3 py-4 text-center text-sm text-muted-foreground">
-                        No attachments resolved
-                      </p>
-                    )
-                  )}
-                </div>
-              )}
-
-              {(email.bodyText || email.bodyHtml) && (
-                <div className="space-y-2">
-                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-                    Body
-                  </p>
-                  <div className="overflow-hidden rounded-lg border border-border/60 bg-background/60">
-                    {email.contentType === "HTML" && email.bodyHtml ? (
-                      <div
-                        className="prose prose-sm max-w-none p-5 dark:prose-invert"
-                        style={{ wordBreak: "break-word" }}
-                        dangerouslySetInnerHTML={{ __html: email.bodyHtml }}
-                      />
-                    ) : (
-                      <pre className="whitespace-pre-wrap p-5 font-sans text-sm leading-relaxed text-foreground/90">
-                        {email.bodyText}
-                      </pre>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </article>
-    </>
-  );
-}
-
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="text-sm text-foreground">{value}</dd>
-    </div>
-  );
-}
-
-function FormRow({
-  id,
-  label,
-  value,
-  onChange,
-  type,
-  placeholder,
-}: {
-  id: string;
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  type?: string;
-  placeholder?: string;
-}) {
-  return (
-    <div className="grid gap-2">
-      <Label
-        htmlFor={id}
-        className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
-      >
-        {label}
-      </Label>
-      <Input
-        id={id}
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </div>
-  );
-}
-
-function EmptyState({
-  icon,
-  title,
-  hint,
-  action,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  hint?: string;
-  action?: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col items-center gap-3 py-10 text-center">
-      <span className="flex size-10 items-center justify-center rounded-full border border-border bg-background text-muted-foreground">
-        {icon}
-      </span>
-      <div>
-        <p className="font-medium text-foreground">{title}</p>
-        {hint && (
-          <p className="mt-1 text-sm text-muted-foreground">{hint}</p>
-        )}
-      </div>
-      {action}
-    </div>
-  );
-}
-
-function SettingsBlock({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-xl border border-border/80 bg-card p-5">
-      <h3 className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-        {title}
-      </h3>
-      <div className="mt-3 space-y-2">{children}</div>
-    </div>
-  );
-}
-
-function SettingRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 border-b border-dashed border-border/60 py-1.5 last:border-b-0">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      <span className="font-mono text-sm text-foreground">{value}</span>
-    </div>
-  );
-}
-
-// Suppress unused import warnings for icons that will be used by future filters
-const _unused = { CheckCircle2, XCircle, Clock, AlertTriangle };
-void _unused;
