@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-const { PrismaClient } = require('../src/generated/prisma');
+const { createMainPrismaClient, createAccountPrismaClient } = require('../src/lib/prisma-factory');
 const path = require('path');
 
-const prisma = new PrismaClient();
+const prisma = createMainPrismaClient();
 
 // Simulate the API call directly
 async function testAPIEndpoint() {
@@ -32,7 +32,6 @@ async function testAPIEndpoint() {
     }
 
     const allEmails = [];
-    let totalCount = 0;
 
     // Search in each account's database (same logic as API)
     for (const account of userAccounts) {
@@ -40,18 +39,11 @@ async function testAPIEndpoint() {
         console.log(`\n🔍 Searching account: ${account.email}`);
         
         // Ensure we have the correct absolute path (same logic as API)
-        const absoluteDbPath = account.dbPath.startsWith('/') 
-          ? account.dbPath 
+        const absoluteDbPath = account.dbPath.startsWith('/')
+          ? account.dbPath
           : path.resolve(process.cwd(), account.dbPath);
-        
-        const { PrismaClient: AccountPrismaClient } = require('../src/generated/prisma');
-        const accountPrisma = new AccountPrismaClient({
-          datasources: {
-            db: {
-              url: `file:${absoluteDbPath}`,
-            },
-          },
-        });
+
+        const accountPrisma = createAccountPrismaClient(absoluteDbPath);
 
         // Same query as in the actual API
         const query = `
@@ -88,7 +80,6 @@ async function testAPIEndpoint() {
         }));
 
         allEmails.push(...emails);
-        totalCount += emails.length;
 
         await accountPrisma.$disconnect();
         

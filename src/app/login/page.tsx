@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { signIn, getSession } from 'next-auth/react';
+import { signIn } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,6 +34,7 @@ export default function LoginPage() {
         router.push('/dashboard');
       }
     } catch (error) {
+      console.error('Login failed:', error);
       toast.error('An unexpected error occurred.');
     } finally {
       setIsLoading(false);

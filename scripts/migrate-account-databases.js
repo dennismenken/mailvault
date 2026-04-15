@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-const { PrismaClient } = require('../src/generated/prisma');
-const sqlite3 = require('sqlite3').verbose();
+const { createMainPrismaClient } = require('../src/lib/prisma-factory');
+const Database = require('better-sqlite3');
 const fs = require('fs').promises;
 const path = require('path');
 
-const prisma = new PrismaClient();
+const prisma = createMainPrismaClient();
 
 // Define all migrations in order
 const MIGRATIONS = [
@@ -19,8 +19,8 @@ const MIGRATIONS = [
       `CREATE INDEX IF NOT EXISTS idx_emails_has_attachments ON emails(hasAttachments)`,
       `CREATE INDEX IF NOT EXISTS idx_emails_content_type ON emails(contentType)`,
       // Update content types based on existing data
-      `UPDATE emails 
-       SET contentType = CASE 
+      `UPDATE emails
+       SET contentType = CASE
          WHEN bodyHtml IS NOT NULL AND trim(bodyHtml) != '' THEN 'HTML'
          ELSE 'PLAIN'
        END
@@ -43,175 +43,162 @@ const MIGRATIONS = [
         updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
       )`
     ]
+  },
+  {
+    id: '003_add_cc_bcc_flags',
+    description: 'Ensure ccAddresses, bccAddresses and flags columns exist (required by UPSERT in imap-sync)',
+    statements: [
+      `ALTER TABLE emails ADD COLUMN ccAddresses TEXT`,
+      `ALTER TABLE emails ADD COLUMN bccAddresses TEXT`,
+      `ALTER TABLE emails ADD COLUMN flags TEXT`
+    ]
   }
 ];
 
-async function setupMigrationTracking(db) {
-  return new Promise((resolve, reject) => {
-    db.run(`
-      CREATE TABLE IF NOT EXISTS migrations_applied (
-        id TEXT PRIMARY KEY,
-        applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `, (err) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
+function setupMigrationTracking(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS migrations_applied (
+      id TEXT PRIMARY KEY,
+      applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 }
 
-async function getMigrationsApplied(db) {
-  return new Promise((resolve, reject) => {
-    db.all('SELECT id FROM migrations_applied', (err, rows) => {
-      if (err) {
-        if (err.message.includes('no such table')) {
-          resolve([]);
-        } else {
-          reject(err);
-        }
-      } else {
-        resolve(rows.map(r => r.id));
-      }
-    });
-  });
+function getMigrationsApplied(db) {
+  try {
+    const rows = db.prepare('SELECT id FROM migrations_applied').all();
+    return rows.map(r => r.id);
+  } catch (err) {
+    if (err && err.message && err.message.includes('no such table')) {
+      return [];
+    }
+    throw err;
+  }
 }
 
-async function markMigrationApplied(db, migrationId) {
-  return new Promise((resolve, reject) => {
-    db.run('INSERT INTO migrations_applied (id) VALUES (?)', [migrationId], (err) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
+function markMigrationApplied(db, migrationId) {
+  db.prepare('INSERT INTO migrations_applied (id) VALUES (?)').run(migrationId);
 }
 
-async function runMigration(db, migration) {
-  console.log(`\n📋 Running migration: ${migration.id} - ${migration.description}`);
-  
+function runMigration(db, migration) {
+  console.log(`\n[migrate] Running migration: ${migration.id} - ${migration.description}`);
+
   for (let i = 0; i < migration.statements.length; i++) {
     const statement = migration.statements[i];
-    await new Promise((resolve, reject) => {
-      db.run(statement, (err) => {
-        if (err && !err.message.includes('duplicate column name') && !err.message.includes('already exists')) {
-          console.error(`❌ Statement ${i + 1}/${migration.statements.length} failed:`, err.message);
-          reject(err);
-        } else {
-          console.log(`✅ Statement ${i + 1}/${migration.statements.length} completed`);
-          resolve();
-        }
-      });
-    });
+    try {
+      db.exec(statement);
+      console.log(`[migrate] Statement ${i + 1}/${migration.statements.length} completed`);
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      if (msg.includes('duplicate column name') || msg.includes('already exists')) {
+        console.log(`[migrate] Statement ${i + 1}/${migration.statements.length} skipped (already applied): ${msg}`);
+        continue;
+      }
+      console.error(`[migrate] Statement ${i + 1}/${migration.statements.length} failed:`, msg);
+      throw err;
+    }
   }
-  
-  await markMigrationApplied(db, migration.id);
-  console.log(`✅ Migration ${migration.id} completed successfully`);
+
+  markMigrationApplied(db, migration.id);
+  console.log(`[migrate] Migration ${migration.id} completed successfully`);
 }
 
 async function migrateAccountDatabase(dbPath) {
-  console.log(`\n🔧 Migrating account database: ${dbPath}`);
-  
-  return new Promise(async (resolve, reject) => {
-    const db = new sqlite3.Database(dbPath, async (err) => {
-      if (err) {
-        reject(err);
-        return;
+  console.log(`\n[migrate] Migrating account database: ${dbPath}`);
+
+  let db;
+  try {
+    db = new Database(dbPath);
+  } catch (err) {
+    throw err;
+  }
+
+  try {
+    setupMigrationTracking(db);
+
+    const appliedMigrations = getMigrationsApplied(db);
+    const migrationsToApply = MIGRATIONS.filter(m => !appliedMigrations.includes(m.id));
+
+    const result = { migrationsApplied: 0 };
+
+    if (migrationsToApply.length === 0) {
+      console.log(`[migrate] Database is up to date (${appliedMigrations.length} migrations already applied)`);
+    } else {
+      console.log(`[migrate] Found ${migrationsToApply.length} migrations to apply`);
+
+      for (const migration of migrationsToApply) {
+        runMigration(db, migration);
+        result.migrationsApplied++;
       }
-      
-      try {
-        // Setup migration tracking
-        await setupMigrationTracking(db);
-        
-        // Get list of applied migrations
-        const appliedMigrations = await getMigrationsApplied(db);
-        
-        // Find migrations to apply
-        const migrationsToApply = MIGRATIONS.filter(m => !appliedMigrations.includes(m.id));
-        
-        let result = { migrationsApplied: 0 };
-        
-        if (migrationsToApply.length === 0) {
-          console.log(`✅ Database is up to date (${appliedMigrations.length} migrations already applied)`);
-        } else {
-          console.log(`📊 Found ${migrationsToApply.length} migrations to apply`);
-          
-          // Apply each migration in order
-          for (const migration of migrationsToApply) {
-            await runMigration(db, migration);
-            result.migrationsApplied++;
-          }
-        }
-        
-        db.close((err) => {
-          if (err) reject(err);
-          else resolve(result);
-        });
-      } catch (error) {
-        db.close();
-        reject(error);
-      }
-    });
-  });
+    }
+
+    return result;
+  } finally {
+    try {
+      db.close();
+    } catch (closeErr) {
+      console.error('[migrate] Error closing database:', closeErr.message);
+    }
+  }
 }
 
 async function migrateAllAccountDatabases() {
-  console.log('🚀 Checking for account database migrations...');
-  console.log('═'.repeat(50));
-  
+  console.log('[migrate] Checking for account database migrations...');
+  console.log('='.repeat(50));
+
   try {
     // Get all IMAP accounts
     const accounts = await prisma.imapAccount.findMany();
-    
+
     if (accounts.length === 0) {
-      console.log('📭 No IMAP accounts found');
-      console.log('ℹ️  New account databases will be created with the latest schema');
+      console.log('[migrate] No IMAP accounts found');
+      console.log('[migrate] New account databases will be created with the latest schema');
       return;
     }
-    
-    console.log(`📧 Found ${accounts.length} account database(s):`);
+
+    console.log(`[migrate] Found ${accounts.length} account database(s):`);
     accounts.forEach((account, index) => {
       console.log(`   ${index + 1}. ${account.email} -> ${account.dbPath}`);
     });
-    
+
     console.log('');
-    console.log('🔍 Checking each database for pending migrations...');
-    
-    // Migrate each account database
+    console.log('[migrate] Checking each database for pending migrations...');
+
     let migratedCount = 0;
     let upToDateCount = 0;
-    
+
     for (const account of accounts) {
       try {
         const absolutePath = path.resolve(process.cwd(), account.dbPath);
-        
-        // Check if database file exists
+
         try {
           await fs.access(absolutePath);
-        } catch (error) {
-          console.log(`⚠️ Database file not found: ${absolutePath}, skipping...`);
+        } catch {
+          console.log(`[migrate] Database file not found: ${absolutePath}, skipping...`);
           continue;
         }
-        
+
         const result = await migrateAccountDatabase(absolutePath);
         if (result && result.migrationsApplied > 0) {
           migratedCount++;
         } else {
           upToDateCount++;
         }
-        
+
       } catch (error) {
-        console.error(`❌ Migration failed for ${account.email}:`, error.message);
+        console.error(`[migrate] Migration failed for ${account.email}:`, error.message);
       }
     }
-    
+
     console.log('');
-    console.log('📊 Migration Summary:');
-    console.log(`   • Databases migrated: ${migratedCount}`);
-    console.log(`   • Already up to date: ${upToDateCount}`);
+    console.log('[migrate] Migration Summary:');
+    console.log(`   - Databases migrated: ${migratedCount}`);
+    console.log(`   - Already up to date: ${upToDateCount}`);
     console.log('');
-    console.log('🎉 Account database migration check completed!');
-    
+    console.log('[migrate] Account database migration check completed!');
+
   } catch (error) {
-    console.error('💥 Migration process failed:', error);
+    console.error('[migrate] Migration process failed:', error);
     throw error;
   } finally {
     await prisma.$disconnect();
@@ -222,13 +209,13 @@ async function migrateAllAccountDatabases() {
 if (require.main === module) {
   migrateAllAccountDatabases()
     .then(() => {
-      console.log('\n✅ Migration check completed successfully!');
+      console.log('\n[migrate] Migration check completed successfully!');
       process.exit(0);
     })
     .catch((error) => {
-      console.error('\n💥 Migration failed:', error);
+      console.error('\n[migrate] Migration failed:', error);
       process.exit(1);
     });
 }
 
-module.exports = { migrateAllAccountDatabases, migrateAccountDatabase }; 
+module.exports = { migrateAllAccountDatabases, migrateAccountDatabase };

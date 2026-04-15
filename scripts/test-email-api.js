@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-const { PrismaClient } = require('../src/generated/prisma');
+const { createMainPrismaClient, createAccountPrismaClient } = require('../src/lib/prisma-factory');
 const path = require('path');
 
-const prisma = new PrismaClient();
+const prisma = createMainPrismaClient();
 
 async function testEmailAPI() {
   console.log('🧪 Testing Email API directly...');
@@ -44,20 +44,13 @@ async function testEmailAPI() {
       
       try {
         // Test direct database access
-        const { PrismaClient: AccountPrismaClient } = require('../src/generated/prisma');
-        const absoluteDbPath = account.dbPath.startsWith('/') 
-          ? account.dbPath 
+        const absoluteDbPath = account.dbPath.startsWith('/')
+          ? account.dbPath
           : path.resolve(process.cwd(), account.dbPath);
-        
+
         console.log(`🔗 Absolute path: ${absoluteDbPath}`);
-        
-        const accountPrisma = new AccountPrismaClient({
-          datasources: {
-            db: {
-              url: `file:${absoluteDbPath}`,
-            },
-          },
-        });
+
+        const accountPrisma = createAccountPrismaClient(absoluteDbPath);
         
         // Try a simple query
         const emailCount = await accountPrisma.$queryRaw`SELECT COUNT(*) as count FROM emails`;

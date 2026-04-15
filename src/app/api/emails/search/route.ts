@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { PrismaClient } from '../../../../generated/prisma';
+import type { PrismaClient } from '../../../../generated/prisma';
+import { createAccountPrismaClient } from '@/lib/prisma-factory';
 import path from 'path';
 
 interface SearchParams {
@@ -34,9 +34,26 @@ interface EmailResult {
   size?: number;
 }
 
+interface EmailRow {
+  id: string;
+  messageId: string;
+  subject: string | null;
+  fromAddress: string | null;
+  fromName: string | null;
+  toAddresses: string | null;
+  date: string | null;
+  folder: string;
+  bodyText: string | null;
+  bodyHtml: string | null;
+  contentType: string | null;
+  hasAttachments: number | null;
+  attachmentsPath: string | null;
+  size: number | null;
+}
+
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
+    const session = await auth();
     
     if (!session?.user?.id) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
@@ -74,24 +91,15 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const allEmails: EmailResult[] = [];
-    let totalCount = 0;
-
     // If requesting full content for a specific email, handle separately
     if (fullContentId) {
       for (const account of userAccounts) {
         try {
-          const absoluteDbPath = account.dbPath.startsWith('/') 
-            ? account.dbPath 
+          const absoluteDbPath = account.dbPath.startsWith('/')
+            ? account.dbPath
             : path.resolve(process.cwd(), account.dbPath);
-          
-          const accountPrisma = new PrismaClient({
-            datasources: {
-              db: {
-                url: `file:${absoluteDbPath}`,
-              },
-            },
-          });
+
+          const accountPrisma = createAccountPrismaClient(absoluteDbPath);
 
           const results = await searchInAccountDatabase(accountPrisma, params, account.email, fullContentId);
           if (results.emails.length > 0) {
@@ -123,17 +131,11 @@ export async function GET(request: NextRequest) {
     let globalTotalCount = 0;
     for (const account of userAccounts) {
       try {
-        const absoluteDbPath = account.dbPath.startsWith('/') 
-          ? account.dbPath 
+        const absoluteDbPath = account.dbPath.startsWith('/')
+          ? account.dbPath
           : path.resolve(process.cwd(), account.dbPath);
-        
-        const accountPrisma = new PrismaClient({
-          datasources: {
-            db: {
-              url: `file:${absoluteDbPath}`,
-            },
-          },
-        });
+
+        const accountPrisma = createAccountPrismaClient(absoluteDbPath);
 
         const count = await getEmailCount(accountPrisma, params);
         globalTotalCount += count;
@@ -148,17 +150,11 @@ export async function GET(request: NextRequest) {
     const allEmailsForSort: EmailResult[] = [];
     for (const account of userAccounts) {
       try {
-        const absoluteDbPath = account.dbPath.startsWith('/') 
-          ? account.dbPath 
+        const absoluteDbPath = account.dbPath.startsWith('/')
+          ? account.dbPath
           : path.resolve(process.cwd(), account.dbPath);
-        
-        const accountPrisma = new PrismaClient({
-          datasources: {
-            db: {
-              url: `file:${absoluteDbPath}`,
-            },
-          },
-        });
+
+        const accountPrisma = createAccountPrismaClient(absoluteDbPath);
 
         // Get ALL matching emails for proper sorting (without pagination at DB level)
         const results = await searchInAccountDatabase(accountPrisma, params, account.email, undefined, true);
@@ -203,7 +199,7 @@ async function getEmailCount(
   params: SearchParams
 ): Promise<number> {
   let whereClause = '';
-  const whereParams: any[] = [];
+  const whereParams: (string | number)[] = [];
 
   if (params.query) {
     whereClause += ' AND (subject LIKE ? OR bodyText LIKE ? OR fromAddress LIKE ?)';
@@ -255,7 +251,7 @@ async function searchInAccountDatabase(
   getAll?: boolean
 ): Promise<{ emails: EmailResult[]; count: number }> {
   let whereClause = '';
-  const whereParams: any[] = [];
+  const whereParams: (string | number)[] = [];
 
   if (params.query) {
     whereClause += ' AND (subject LIKE ? OR bodyText LIKE ? OR fromAddress LIKE ?)';
@@ -301,25 +297,24 @@ async function searchInAccountDatabase(
       ${fullContentId ? 'LIMIT 1' : (getAll ? '' : 'LIMIT 1000')}
     `;
 
-    const rawEmails = await accountPrisma.$queryRawUnsafe<any[]>(query, ...whereParams);
-    
-    const emails: EmailResult[] = rawEmails.map((email: any) => ({
+    const rawEmails = await accountPrisma.$queryRawUnsafe<EmailRow[]>(query, ...whereParams);
+
+    const emails: EmailResult[] = rawEmails.map((email) => ({
       id: email.id,
       messageId: email.messageId,
-      subject: email.subject,
-      fromAddress: email.fromAddress,
-      fromName: email.fromName,
+      subject: email.subject ?? undefined,
+      fromAddress: email.fromAddress ?? undefined,
+      fromName: email.fromName ?? undefined,
       toAddresses: email.toAddresses ? JSON.parse(email.toAddresses) : [],
-      date: email.date,
+      date: email.date ?? undefined,
       folder: email.folder,
-      // Return full content if requesting specific email, otherwise truncate
-      bodyText: fullContentId ? email.bodyText : email.bodyText?.substring(0, 500),
-      bodyHtml: fullContentId ? email.bodyHtml : email.bodyHtml?.substring(0, 1000),
-      contentType: email.contentType || 'PLAIN',
-      hasAttachments: email.hasAttachments || false,
-      attachmentsPath: email.attachmentsPath,
+      bodyText: fullContentId ? (email.bodyText ?? undefined) : email.bodyText?.substring(0, 500),
+      bodyHtml: fullContentId ? (email.bodyHtml ?? undefined) : email.bodyHtml?.substring(0, 1000),
+      contentType: email.contentType ?? 'PLAIN',
+      hasAttachments: Boolean(email.hasAttachments),
+      attachmentsPath: email.attachmentsPath ?? undefined,
       accountEmail,
-      size: email.size,
+      size: email.size ?? undefined,
     }));
 
     return { emails, count: emails.length };

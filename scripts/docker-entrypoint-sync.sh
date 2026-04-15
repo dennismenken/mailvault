@@ -1,91 +1,77 @@
 #!/bin/bash
 set -e
 
-echo "🔄 Mail Vault Sync Service"
+echo "[sync-entrypoint] Mail Vault Sync Service"
 echo "=========================="
 
-# Function to wait for database file to be accessible
 wait_for_database() {
-    echo "📁 Waiting for data directory to be mounted..."
+    echo "[sync-entrypoint] waiting for data directory to be mounted..."
     while [ ! -d "/app/data" ]; do
-        echo "⏳ Data directory not found, waiting..."
+        echo "[sync-entrypoint] data directory not found, waiting..."
         sleep 2
     done
-    echo "✅ Data directory found"
+    echo "[sync-entrypoint] data directory found"
 }
 
-# Function to wait for main database to be ready
 wait_for_main_database() {
-    echo "📊 Waiting for main database to be ready..."
+    echo "[sync-entrypoint] waiting for main database to be ready..."
     local max_attempts=30
     local attempt=1
-    
+
     while [ $attempt -le $max_attempts ]; do
         if [ -f "/app/data/database/main.db" ]; then
-            echo "✅ Main database found"
+            echo "[sync-entrypoint] main database found"
             return 0
         fi
-        
-        echo "⏳ Attempt $attempt/$max_attempts: Main database not ready, waiting..."
+
+        echo "[sync-entrypoint] attempt $attempt/$max_attempts: main database not ready, waiting..."
         sleep 2
         attempt=$((attempt + 1))
     done
-    
-    echo "⚠️ Main database not found after $max_attempts attempts"
-    echo "🚀 Starting sync service anyway (database will be created if needed)"
+
+    echo "[sync-entrypoint] main database not found after $max_attempts attempts"
+    echo "[sync-entrypoint] starting sync service anyway (database will be created if needed)"
 }
 
-# Function to check Prisma client
 check_prisma_client() {
-    echo "🔍 Checking Prisma client..."
-    
+    echo "[sync-entrypoint] checking Prisma client..."
+
     if [ -d "/app/src/generated/prisma" ]; then
-        echo "✅ Prisma client found"
+        echo "[sync-entrypoint] Prisma client found"
     else
-        echo "⚠️ Prisma client not found, generating..."
+        echo "[sync-entrypoint] Prisma client not found, generating..."
         if npx prisma generate; then
-            echo "✅ Prisma client generated"
+            echo "[sync-entrypoint] Prisma client generated"
         else
-            echo "❌ Prisma client generation failed"
+            echo "[sync-entrypoint] Prisma client generation failed"
             exit 1
         fi
     fi
 }
 
-# Function to check account database migrations
 check_account_migrations() {
-    echo "🔍 Checking account database migrations..."
-    
+    echo "[sync-entrypoint] checking account database migrations..."
+
     if node scripts/migrate-account-databases.js; then
-        echo "✅ Account database check completed"
+        echo "[sync-entrypoint] account database check completed"
     else
-        echo "⚠️ Account database check failed (this is normal if no accounts exist)"
+        echo "[sync-entrypoint] account database check failed (normal if no accounts exist)"
     fi
 }
 
-# Main execution
 main() {
-    echo "🏁 Starting Mail Vault Sync Service setup..."
-    
-    # Wait for mounted volumes
+    echo "[sync-entrypoint] starting Mail Vault Sync Service setup..."
+
     wait_for_database
-    
-    # Check Prisma client (only generate if missing)
     check_prisma_client
-    
-    # Wait for main database (created by web service)
     wait_for_main_database
-    
-    # Check account database migrations
     check_account_migrations
-    
-    echo "✅ Sync service setup completed!"
-    echo "🚀 Starting sync service: $@"
+
+    echo "[sync-entrypoint] sync service setup completed"
+    echo "[sync-entrypoint] starting sync service: $@"
     echo "=========================="
-    
-    # Execute the main command
+
     exec "$@"
 }
 
-# Run main function with all arguments
-main "$@" 
+main "$@"

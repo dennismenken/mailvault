@@ -89,11 +89,6 @@ async function debugSessionFlow() {
         console.log(`⚠️ Toast messages: ${hasErrors}`);
       }
       
-      // Get console errors
-      const logs = await page.evaluate(() => {
-        return window.console.error.toString();
-      });
-      
       console.log('\n📊 Session Debug Summary:');
       console.log(`✅ Login: Successful`);
       console.log(`✅ Redirect: ${currentUrl}`);
@@ -132,7 +127,7 @@ async function simpleCurlTest() {
       output += data.toString();
     });
     
-    curl.on('close', (code) => {
+    curl.on('close', () => {
       console.log(`📡 Dashboard HTTP Status: ${output}`);
       
       if (output === '200') {
@@ -160,7 +155,7 @@ if (require.main === module) {
         console.error('\n💥 Browser debug failed:', error);
         process.exit(1);
       });
-  } catch (e) {
+  } catch {
     console.log('📝 Puppeteer not available, using simple curl test...');
     simpleCurlTest()
       .then(() => {

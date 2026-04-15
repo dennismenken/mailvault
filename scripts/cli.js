@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-const { PrismaClient } = require('../src/generated/prisma');
+const { createMainPrismaClient } = require('../src/lib/prisma-factory');
 const bcrypt = require('bcryptjs');
 const fs = require('fs').promises;
 const path = require('path');
 const readline = require('readline');
+const Database = require('better-sqlite3');
 
-const prisma = new PrismaClient();
+const prisma = createMainPrismaClient();
 
 // Create readline interface for prompts
 const rl = readline.createInterface({
@@ -109,7 +110,7 @@ async function showStatus() {
           console.log(`   • ${file}`);
         });
       }
-    } catch (error) {
+    } catch {
       // Data directory doesn't exist yet, that's fine
     }
   } catch (error) {
@@ -169,7 +170,7 @@ async function resetAllData() {
         await fs.rmdir(dataDir);
         console.log('🗑️  Removed empty data directory');
       }
-    } catch (error) {
+    } catch {
       // Directory doesn't exist or not empty, that's fine
     }
 
@@ -183,6 +184,56 @@ async function resetAllData() {
     console.error('❌ Error during reset:', error.message);
     throw error;
   }
+}
+
+async function resetSyncState(accountIdArg) {
+  const accounts = accountIdArg
+    ? await prisma.imapAccount.findMany({ where: { id: accountIdArg } })
+    : await prisma.imapAccount.findMany();
+
+  if (accounts.length === 0) {
+    console.log('No matching IMAP accounts found.');
+    return;
+  }
+
+  console.log(`Clearing sync_state for ${accounts.length} account(s).`);
+  console.log('Use this after an IMAP UIDVALIDITY change or when incremental sync got wedged.');
+  console.log('The next sync cycle falls back to full-folder scans, but already-archived');
+  console.log('message IDs are still skipped, so existing rows are not touched.');
+  console.log('');
+
+  const answer = await prompt('Continue? (y/N): ');
+  if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+    console.log('Cancelled.');
+    return;
+  }
+
+  for (const account of accounts) {
+    const absoluteDbPath = path.isAbsolute(account.dbPath)
+      ? account.dbPath
+      : path.resolve(process.cwd(), account.dbPath);
+
+    try {
+      const db = new Database(absoluteDbPath);
+      db.exec('DELETE FROM sync_state');
+      db.close();
+      console.log(`[ok] Cleared sync_state in ${account.email} (${absoluteDbPath})`);
+    } catch (error) {
+      console.error(`[err] Failed to reset ${account.email}: ${error.message}`);
+    }
+
+    try {
+      await prisma.imapAccount.update({
+        where: { id: account.id },
+        data: { lastSyncAt: null, errorCount: 0, errorMessage: null },
+      });
+    } catch (error) {
+      console.error(`[err] Failed to clear lastSyncAt for ${account.email}: ${error.message}`);
+    }
+  }
+
+  console.log('');
+  console.log('Sync state cleared. The next background sync cycle re-derives folder cursors.');
 }
 
 async function main() {
@@ -220,6 +271,18 @@ async function main() {
         break;
       }
 
+      case 'reset-sync-state': {
+        let accountId;
+        const flagIndex = args.indexOf('--account-id');
+        if (flagIndex !== -1) {
+          accountId = args[flagIndex + 1];
+        } else if (args[1] && !args[1].startsWith('--')) {
+          accountId = args[1];
+        }
+        await resetSyncState(accountId);
+        break;
+      }
+
       default:
         console.log('🏗️  Mail Vault CLI - Initial Setup');
         console.log('═'.repeat(40));
@@ -228,6 +291,7 @@ async function main() {
         console.log('  create-initial-user <email> <password> [name]   Create the first user');
         console.log('  status                                           Show application status');
         console.log('  reset                                            Reset all data (DANGER!)');
+        console.log('  reset-sync-state [--account-id <id>]             Force full resync (clears sync_state per account)');
         console.log('');
         console.log('💡 After creating the initial user, use the web interface for:');
         console.log('   • Managing users');

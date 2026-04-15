@@ -1,15 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { promises as fs } from 'fs';
 import path from 'path';
 
 // GET /api/imap-accounts - List user's IMAP accounts
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    
+    const session = await auth();
+
     if (!session?.user?.id) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
@@ -50,13 +49,13 @@ export async function GET(request: NextRequest) {
 // POST /api/imap-accounts - Create new IMAP account
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    
+    const session = await auth();
+
     if (!session?.user?.id) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
     }
 
-    const { 
+    const {
       email, 
       imapServer, 
       imapPort = 993, 

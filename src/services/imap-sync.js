@@ -1,25 +1,26 @@
 const Imap = require('imap');
 const { simpleParser } = require('mailparser');
-const { PrismaClient } = require('../generated/prisma');
 const path = require('path');
 const fs = require('fs').promises;
-const sqlite3 = require('sqlite3').verbose();
+const Database = require('better-sqlite3');
 
 class ImapSyncService {
   constructor(config) {
     this.accountId = config.accountId;
     this.dbPath = config.dbPath;
     this.maxErrors = parseInt(process.env.MAX_SYNC_ERRORS || '10');
-    this.batchSize = parseInt(process.env.SYNC_BATCH_SIZE || '5'); // Kleinere Batches für Gmail
-    this.batchDelay = parseInt(process.env.SYNC_BATCH_DELAY || '1000'); // 1 Sekunde zwischen Batches
-    this.reconnectDelay = parseInt(process.env.SYNC_RECONNECT_DELAY || '5000'); // 5 Sekunden für Reconnect
+    this.batchSize = parseInt(process.env.SYNC_BATCH_SIZE || '5'); // Smaller batches for Gmail
+    this.batchDelay = parseInt(process.env.SYNC_BATCH_DELAY || '1000'); // 1 second between batches
+    this.reconnectDelay = parseInt(process.env.SYNC_RECONNECT_DELAY || '5000'); // 5 seconds for reconnect
     this.maxReconnectAttempts = 3;
     this.errors = [];
     this.processedMessages = 0;
     this.totalNewMessages = 0;
     this.db = null;
+    // Prepared statement cache; populated in initializeAccountDatabase().
+    this.stmts = null;
     this.connectionConfig = config;
-    
+
     this.setupImap();
   }
 
@@ -45,22 +46,22 @@ class ImapSyncService {
 
   setupEventHandlers() {
     this.imap.once('ready', () => {
-      console.log(`📧 IMAP connection ready for account ${this.accountId}`);
+      console.log(`[imap] connection ready for account ${this.accountId}`);
     });
 
     this.imap.once('error', (err) => {
-      console.error(`❌ IMAP connection error for account ${this.accountId}:`, err.message);
+      console.error(`[imap] connection error for account ${this.accountId}:`, err.message);
     });
 
     this.imap.once('end', () => {
-      console.log(`📧 Connection ended for account ${this.accountId}`);
+      console.log(`[imap] connection ended for account ${this.accountId}`);
     });
 
     this.imap.once('close', (hadError) => {
       if (hadError) {
-        console.log(`📧 Connection closed with error for account ${this.accountId}`);
+        console.log(`[imap] connection closed with error for account ${this.accountId}`);
       } else {
-        console.log(`📧 Connection closed normally for account ${this.accountId}`);
+        console.log(`[imap] connection closed normally for account ${this.accountId}`);
       }
     });
   }
@@ -73,15 +74,15 @@ class ImapSyncService {
 
       this.imap.once('ready', () => {
         clearTimeout(timeout);
-        console.log(`✅ Connected to IMAP server (attempt ${attempt})`);
+        console.log(`[imap] connected (attempt ${attempt})`);
         resolve();
       });
-      
+
       this.imap.once('error', (err) => {
         clearTimeout(timeout);
         reject(err);
       });
-      
+
       try {
         this.imap.connect();
       } catch (error) {
@@ -92,36 +93,36 @@ class ImapSyncService {
   }
 
   async reconnect() {
-    console.log(`🔄 Attempting to reconnect to IMAP server...`);
-    
+    console.log(`[imap] attempting to reconnect...`);
+
     for (let attempt = 1; attempt <= this.maxReconnectAttempts; attempt++) {
       try {
         // Clean up old connection
         if (this.imap.state !== 'disconnected') {
           this.imap.end();
         }
-        
+
         // Wait before reconnecting
         await new Promise(resolve => setTimeout(resolve, this.reconnectDelay));
-        
+
         // Create new IMAP instance
         this.setupImap();
-        
+
         // Try to connect
         await this.connect(attempt);
-        
-        console.log(`✅ Successfully reconnected on attempt ${attempt}`);
+
+        console.log(`[imap] successfully reconnected on attempt ${attempt}`);
         return true;
-        
+
       } catch (error) {
-        console.error(`❌ Reconnect attempt ${attempt} failed:`, error.message);
-        
+        console.error(`[imap] reconnect attempt ${attempt} failed:`, error.message);
+
         if (attempt === this.maxReconnectAttempts) {
           throw new Error(`Failed to reconnect after ${this.maxReconnectAttempts} attempts`);
         }
       }
     }
-    
+
     return false;
   }
 
@@ -130,12 +131,13 @@ class ImapSyncService {
       this.imap.end();
     }
     if (this.db) {
-      await new Promise((resolve) => {
-        this.db.close((err) => {
-          if (err) console.error('Error closing database:', err);
-          resolve();
-        });
-      });
+      try {
+        this.db.close();
+      } catch (err) {
+        console.error('Error closing database:', err);
+      }
+      this.db = null;
+      this.stmts = null;
     }
   }
 
@@ -145,8 +147,17 @@ class ImapSyncService {
       const dataDir = path.dirname(this.dbPath);
       await fs.mkdir(dataDir, { recursive: true });
 
-      // Initialize SQLite database directly
-      this.db = new sqlite3.Database(this.dbPath);
+      // Initialize SQLite database directly via better-sqlite3 (synchronous, throws on error).
+      this.db = new Database(this.dbPath);
+
+      // Enable WAL mode to improve concurrency between the web app and the sync service.
+      // better-sqlite3 pragmas are executed synchronously; failures are logged but not fatal.
+      try {
+        this.db.pragma('journal_mode = WAL');
+        this.db.pragma('synchronous = NORMAL');
+      } catch (pragmaErr) {
+        console.warn('[db] Failed to set WAL pragmas:', pragmaErr.message);
+      }
 
       // Initialize database schema with current schema (latest version)
       const createTableSQL = `
@@ -200,65 +211,81 @@ class ImapSyncService {
         'CREATE INDEX IF NOT EXISTS idx_emails_folder_uid ON emails(folder, uid)'
       ];
 
-      // Execute schema creation
-      await new Promise((resolve, reject) => {
-        this.db.run(createTableSQL, (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-
-      // Create sync_state table
-      await new Promise((resolve, reject) => {
-        this.db.run(createSyncStateSQL, (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
+      // Execute schema creation synchronously (better-sqlite3 throws on failure).
+      this.db.exec(createTableSQL);
+      this.db.exec(createSyncStateSQL);
 
       // Create migrations_applied table for tracking
-      const createMigrationsSQL = `
+      this.db.exec(`
         CREATE TABLE IF NOT EXISTS migrations_applied (
           id TEXT PRIMARY KEY,
           applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-      `;
-      
-      await new Promise((resolve, reject) => {
-        this.db.run(createMigrationsSQL, (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
+      `);
 
       // Execute index creation
       for (const indexSql of indexes) {
-        await new Promise((resolve, reject) => {
-          this.db.run(indexSql, (err) => {
-            if (err) reject(err);
-            else resolve();
-          });
-        });
-      }
-      
-      // Mark initial schema as applied (both migrations)
-      const markInitialMigrations = [
-        `INSERT OR IGNORE INTO migrations_applied (id) VALUES ('001_add_content_type')`,
-        `INSERT OR IGNORE INTO migrations_applied (id) VALUES ('002_add_uid_sync_state')`
-      ];
-      
-      for (const sql of markInitialMigrations) {
-        await new Promise((resolve, reject) => {
-          this.db.run(sql, (err) => {
-            if (err) reject(err);
-            else resolve();
-          });
-        });
+        this.db.exec(indexSql);
       }
 
-      console.log(`✅ Account database initialized for ${this.accountId}`);
+      // Mark initial schema as applied (both migrations)
+      const markInitialStmt = this.db.prepare(
+        'INSERT OR IGNORE INTO migrations_applied (id) VALUES (?)'
+      );
+      markInitialStmt.run('001_add_content_type');
+      markInitialStmt.run('002_add_uid_sync_state');
+
+      // Pre-prepare hot-path statements used during sync to avoid re-preparing
+      // inside tight loops.
+      this.stmts = {
+        insertEmail: this.db.prepare(`
+          INSERT INTO emails (
+            id, messageId, uid, subject, fromAddress, fromName, toAddresses,
+            ccAddresses, bccAddresses, bodyText, bodyHtml, contentType,
+            hasAttachments, attachmentsPath, attachments, folder, flags,
+            date, size, createdAt, updatedAt
+          ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            datetime('now'), datetime('now')
+          )
+          ON CONFLICT(messageId) DO UPDATE SET
+            uid = excluded.uid,
+            subject = excluded.subject,
+            fromAddress = excluded.fromAddress,
+            fromName = excluded.fromName,
+            toAddresses = excluded.toAddresses,
+            ccAddresses = excluded.ccAddresses,
+            bccAddresses = excluded.bccAddresses,
+            bodyText = excluded.bodyText,
+            bodyHtml = excluded.bodyHtml,
+            contentType = excluded.contentType,
+            hasAttachments = excluded.hasAttachments,
+            attachmentsPath = excluded.attachmentsPath,
+            attachments = excluded.attachments,
+            folder = excluded.folder,
+            flags = excluded.flags,
+            date = excluded.date,
+            size = excluded.size,
+            updatedAt = datetime('now')
+        `),
+        selectSyncState: this.db.prepare('SELECT * FROM sync_state WHERE folder = ?'),
+        selectLastDate: this.db.prepare('SELECT MAX(date) as lastDate FROM emails WHERE folder = ?'),
+        selectMessageIds: this.db.prepare('SELECT messageId FROM emails WHERE folder = ?'),
+        selectMaxUid: this.db.prepare('SELECT MAX(uid) as maxUid FROM emails WHERE folder = ? AND uid IS NOT NULL'),
+        upsertSyncState: this.db.prepare(`
+          INSERT INTO sync_state (id, folder, uidValidity, highestUid, lastSyncAt, createdAt, updatedAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(folder) DO UPDATE SET
+            uidValidity = excluded.uidValidity,
+            highestUid = excluded.highestUid,
+            lastSyncAt = excluded.lastSyncAt,
+            updatedAt = excluded.updatedAt
+        `)
+      };
+
+      console.log(`[db] account database initialized for ${this.accountId}`);
     } catch (error) {
-      console.error(`❌ Failed to initialize account database for ${this.accountId}:`, error);
+      console.error(`[db] failed to initialize account database for ${this.accountId}:`, error);
       throw error;
     }
   }
@@ -277,104 +304,72 @@ class ImapSyncService {
 
   extractFolderNames(boxes, prefix = '') {
     let folders = [];
-    
+
     for (const [name, box] of Object.entries(boxes)) {
       const fullName = prefix ? `${prefix}${box.delimiter || '/'}${name}` : name;
       folders.push(fullName);
-      
+
       if (box.children) {
         folders = folders.concat(this.extractFolderNames(box.children, fullName));
       }
     }
-    
+
     return folders;
   }
 
   async syncFolder(folderName) {
     const maxRetries = this.maxReconnectAttempts;
-    
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         return await this.syncFolderAttempt(folderName);
       } catch (error) {
-        console.error(`❌ Sync attempt ${attempt} failed for folder ${folderName}:`, error.message);
-        
+        console.error(`[sync] attempt ${attempt} failed for folder ${folderName}:`, error.message);
+
         if (attempt < maxRetries) {
-          console.log(`🔄 Retrying sync for folder ${folderName} (attempt ${attempt + 1}/${maxRetries})...`);
+          console.log(`[sync] retrying folder ${folderName} (attempt ${attempt + 1}/${maxRetries})...`);
           await this.reconnect();
           await new Promise(resolve => setTimeout(resolve, this.reconnectDelay));
         } else {
-          console.error(`❌ Max retries reached for folder ${folderName}`);
+          console.error(`[sync] max retries reached for folder ${folderName}`);
           throw error;
         }
       }
     }
   }
 
-  async getLastSyncDate(folderName) {
+  getLastSyncDate(folderName) {
     try {
-      return new Promise((resolve, reject) => {
-        this.db.get(
-          'SELECT MAX(date) as lastDate FROM emails WHERE folder = ?',
-          [folderName],
-          (err, row) => {
-            if (err) {
-              console.warn(`⚠️ Could not get last sync date for folder ${folderName}:`, err);
-              resolve(null);
-            } else {
-              resolve(row?.lastDate ? new Date(row.lastDate) : null);
-            }
-          }
-        );
-      });
+      const row = this.stmts.selectLastDate.get(folderName);
+      return row && row.lastDate ? new Date(row.lastDate) : null;
     } catch (error) {
-      console.warn(`⚠️ Could not get last sync date for folder ${folderName}:`, error);
+      console.warn(`[db] could not get last sync date for folder ${folderName}:`, error.message);
       return null;
     }
   }
 
-  async getSyncState(folderName) {
+  getSyncState(folderName) {
     try {
-      return new Promise((resolve, reject) => {
-        this.db.get(
-          'SELECT * FROM sync_state WHERE folder = ?',
-          [folderName],
-          (err, row) => {
-            if (err) {
-              console.warn(`⚠️ Could not get sync state for folder ${folderName}:`, err);
-              resolve(null);
-            } else {
-              resolve(row);
-            }
-          }
-        );
-      });
+      return this.stmts.selectSyncState.get(folderName) || null;
     } catch (error) {
-      console.warn(`⚠️ Could not get sync state for folder ${folderName}:`, error);
+      console.warn(`[db] could not get sync state for folder ${folderName}:`, error.message);
       return null;
     }
   }
 
-  async updateSyncState(folderName, uidValidity, highestUid) {
-    return new Promise((resolve, reject) => {
-      const id = require('crypto').randomBytes(16).toString('hex');
-      const now = new Date().toISOString();
-      
-      this.db.run(
-        `INSERT INTO sync_state (id, folder, uidValidity, highestUid, lastSyncAt, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(folder) DO UPDATE SET
-         uidValidity = excluded.uidValidity,
-         highestUid = excluded.highestUid,
-         lastSyncAt = excluded.lastSyncAt,
-         updatedAt = excluded.updatedAt`,
-        [id, folderName, uidValidity, highestUid, now, now, now],
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+  updateSyncState(folderName, uidValidity, highestUid) {
+    const id = require('crypto').randomBytes(16).toString('hex');
+    const now = new Date().toISOString();
+
+    this.stmts.upsertSyncState.run(
+      id,
+      folderName,
+      uidValidity,
+      highestUid,
+      now,
+      now,
+      now
+    );
   }
 
   async syncFolderAttempt(folderName) {
@@ -388,78 +383,78 @@ class ImapSyncService {
         try {
           const totalMessages = box.messages.total;
           const uidValidity = box.uidvalidity;
-          
+
           if (totalMessages === 0) {
-            console.log(`📁 Folder ${folderName} is empty`);
+            console.log(`[sync] folder ${folderName} is empty`);
             resolve(0);
             return;
           }
 
-          console.log(`📁 Syncing folder ${folderName} with ${totalMessages} messages (UIDVALIDITY: ${uidValidity})`);
+          console.log(`[sync] syncing folder ${folderName} with ${totalMessages} messages (UIDVALIDITY: ${uidValidity})`);
 
           // Get the sync state for this folder
-          const syncState = await this.getSyncState(folderName);
+          const syncState = this.getSyncState(folderName);
           let messagesToFetch = [];
           let newMessageCount = 0;
           let needFullSync = false;
 
           // Check if we need a full sync due to UIDVALIDITY change
           if (syncState && syncState.uidValidity && syncState.uidValidity !== uidValidity) {
-            console.log(`⚠️ UIDVALIDITY changed from ${syncState.uidValidity} to ${uidValidity}. Full sync required.`);
+            console.log(`[sync] UIDVALIDITY changed from ${syncState.uidValidity} to ${uidValidity}. Full sync required.`);
             needFullSync = true;
           }
 
           if (!needFullSync && syncState && syncState.highestUid > 0) {
-            console.log(`🔄 Incremental sync: looking for messages with UID > ${syncState.highestUid}`);
-            
+            console.log(`[sync] incremental: looking for messages with UID > ${syncState.highestUid}`);
+
             // Use UID FETCH to get only new messages
             try {
               const fetchRange = `${syncState.highestUid + 1}:*`;
-              console.log(`🔍 Fetching UID range: ${fetchRange}`);
-              
-              messagesToFetch = await new Promise((resolve, reject) => {
+              console.log(`[sync] fetching UID range: ${fetchRange}`);
+
+              messagesToFetch = await new Promise((resolveFetch, rejectFetch) => {
                 const messages = [];
-                const fetch = this.imap.fetch(fetchRange, { 
-                  bodies: 'HEADER.FIELDS (MESSAGE-ID)', 
-                  struct: true 
+                const fetch = this.imap.fetch(fetchRange, {
+                  bodies: 'HEADER.FIELDS (MESSAGE-ID)',
+                  struct: true
                 });
-                
-                fetch.on('message', (msg, seqno) => {
+
+                fetch.on('message', (msg, _seqno) => {
                   msg.on('attributes', (attrs) => {
                     messages.push(attrs.uid);
                   });
                 });
-                
-                fetch.on('error', (err) => {
+
+                fetch.on('error', (fetchErr) => {
                   // If the range is empty, it's not an error
-                  if (err.message.includes('Nothing to fetch')) {
-                    resolve([]);
+                  if (fetchErr.message.includes('Nothing to fetch')) {
+                    resolveFetch([]);
                   } else {
-                    reject(err);
+                    rejectFetch(fetchErr);
                   }
                 });
-                
+
                 fetch.on('end', () => {
-                  resolve(messages);
+                  resolveFetch(messages);
                 });
               });
 
-              console.log(`📬 Found ${messagesToFetch.length} new messages with UIDs > ${syncState.highestUid}`);
+              console.log(`[sync] found ${messagesToFetch.length} new messages with UIDs > ${syncState.highestUid}`);
             } catch (uidError) {
-              console.warn(`⚠️ UID FETCH failed, falling back to date-based sync:`, uidError.message);
+              console.warn(`[sync] UID FETCH failed, falling back to date-based sync:`, uidError.message);
               // Fall back to date-based sync
-              const lastSyncDate = await this.getLastSyncDate(folderName);
+              const lastSyncDate = this.getLastSyncDate(folderName);
               if (lastSyncDate) {
                 const searchCriteria = ['SINCE', lastSyncDate];
                 try {
-                  messagesToFetch = await new Promise((resolve, reject) => {
-                    this.imap.search(searchCriteria, (err, results) => {
-                      if (err) reject(err);
-                      else resolve(results || []);
+                  messagesToFetch = await new Promise((resolveSearch, rejectSearch) => {
+                    this.imap.search(searchCriteria, (searchErr, results) => {
+                      if (searchErr) rejectSearch(searchErr);
+                      else resolveSearch(results || []);
                     });
                   });
                 } catch (searchError) {
-                  console.warn(`⚠️ SEARCH also failed, falling back to full check:`, searchError.message);
+                  console.warn(`[sync] SEARCH also failed, falling back to full check:`, searchError.message);
                   messagesToFetch = await this.getNewMessagesFullCheck(folderName, totalMessages);
                 }
               } else {
@@ -467,51 +462,51 @@ class ImapSyncService {
               }
             }
           } else {
-            console.log(`🆕 First sync or full sync required for folder ${folderName}, checking all messages`);
+            console.log(`[sync] first or full sync required for folder ${folderName}, checking all messages`);
             messagesToFetch = await this.getNewMessagesFullCheck(folderName, totalMessages);
           }
 
           if (messagesToFetch.length === 0) {
-            console.log(`📁 No new messages to sync in folder ${folderName}`);
+            console.log(`[sync] no new messages to sync in folder ${folderName}`);
             resolve(0);
             return;
           }
 
-          console.log(`📥 Fetching ${messagesToFetch.length} new messages from ${folderName}`);
+          console.log(`[sync] fetching ${messagesToFetch.length} new messages from ${folderName}`);
 
           // Fetch full messages in small batches with delays
           for (let i = 0; i < messagesToFetch.length; i += this.batchSize) {
             const batch = messagesToFetch.slice(i, i + this.batchSize);
             const batchNum = Math.floor(i / this.batchSize) + 1;
             const totalBatches = Math.ceil(messagesToFetch.length / this.batchSize);
-            
-            console.log(`📦 Processing batch ${batchNum}/${totalBatches} (${batch.length} messages)`);
-            
+
+            console.log(`[sync] processing batch ${batchNum}/${totalBatches} (${batch.length} messages)`);
+
             try {
               const count = await this.fetchMessageBatch(batch, folderName);
               newMessageCount += count;
-              
+
               // Progress update
               const progress = Math.round(((i + batch.length) / messagesToFetch.length) * 100);
-              console.log(`✅ Batch completed: ${i + batch.length}/${messagesToFetch.length} messages (${progress}%)`);
-              
+              console.log(`[sync] batch completed: ${i + batch.length}/${messagesToFetch.length} messages (${progress}%)`);
+
               // Gmail-friendly delay between batches
               if (i + this.batchSize < messagesToFetch.length) {
-                console.log(`⏸️  Waiting ${this.batchDelay}ms before next batch...`);
+                console.log(`[sync] waiting ${this.batchDelay}ms before next batch...`);
                 await new Promise(resolve => setTimeout(resolve, this.batchDelay));
               }
-              
+
             } catch (error) {
               this.errors.push(`Batch processing error in ${folderName}: ${error.message}`);
-              console.error(`❌ Batch ${batchNum} error: ${error.message}`);
-              
+              console.error(`[sync] batch ${batchNum} error: ${error.message}`);
+
               // If it's a connection error, let the outer function handle reconnection
               if (error.message.includes('socket') || error.message.includes('connection')) {
                 throw error;
               }
-              
+
               if (this.errors.length >= this.maxErrors) {
-                console.error(`❌ Maximum errors reached (${this.maxErrors}). Stopping sync.`);
+                console.error(`[sync] maximum errors reached (${this.maxErrors}). Stopping sync.`);
                 break;
               }
             }
@@ -521,23 +516,15 @@ class ImapSyncService {
           if (newMessageCount > 0 && uidValidity) {
             try {
               // Get the highest UID from the database for this folder
-              const highestUid = await new Promise((resolve, reject) => {
-                this.db.get(
-                  'SELECT MAX(uid) as maxUid FROM emails WHERE folder = ? AND uid IS NOT NULL',
-                  [folderName],
-                  (err, row) => {
-                    if (err) reject(err);
-                    else resolve(row?.maxUid || 0);
-                  }
-                );
-              });
-              
+              const row = this.stmts.selectMaxUid.get(folderName);
+              const highestUid = (row && row.maxUid) || 0;
+
               if (highestUid > 0) {
-                await this.updateSyncState(folderName, uidValidity, highestUid);
-                console.log(`📊 Updated sync state: folder=${folderName}, uidValidity=${uidValidity}, highestUid=${highestUid}`);
+                this.updateSyncState(folderName, uidValidity, highestUid);
+                console.log(`[sync] updated sync state: folder=${folderName}, uidValidity=${uidValidity}, highestUid=${highestUid}`);
               }
             } catch (error) {
-              console.warn(`⚠️ Could not update sync state:`, error.message);
+              console.warn(`[sync] could not update sync state:`, error.message);
             }
           }
 
@@ -550,16 +537,16 @@ class ImapSyncService {
   }
 
   async getNewMessagesFullCheck(folderName, totalMessages) {
-    console.log(`⚙️  Using batch size: ${this.batchSize}, delay: ${this.batchDelay}ms`);
+    console.log(`[sync] using batch size: ${this.batchSize}, delay: ${this.batchDelay}ms`);
 
     // Get existing message IDs to avoid duplicates
-    const existingMessages = await this.getExistingMessageIds(folderName);
+    const existingMessages = this.getExistingMessageIds(folderName);
 
     // For large mailboxes, warn about processing time
     if (totalMessages > 1000) {
-      console.log(`📊 Large mailbox detected (${totalMessages} messages). This will take time...`);
+      console.log(`[sync] large mailbox detected (${totalMessages} messages). This will take time...`);
       const estimatedTime = Math.round((totalMessages / this.batchSize) * (this.batchDelay / 1000) / 60);
-      console.log(`⏱️  Estimated time: ~${estimatedTime} minutes`);
+      console.log(`[sync] estimated time: ~${estimatedTime} minutes`);
     }
 
     return new Promise((resolve, reject) => {
@@ -570,24 +557,24 @@ class ImapSyncService {
 
       const messagesToFetch = [];
       let processedHeaders = 0;
-      
+
       fetch.on('message', (msg, seqno) => {
-        msg.on('body', (stream, info) => {
+        msg.on('body', (stream, _info) => {
           let buffer = '';
-          
+
           stream.on('data', (chunk) => {
             buffer += chunk.toString('ascii');
           });
-          
+
           stream.once('end', () => {
             const messageId = this.extractMessageId(buffer);
             if (messageId && !existingMessages.has(messageId)) {
               messagesToFetch.push(seqno);
             }
-            
+
             processedHeaders++;
             if (processedHeaders % 500 === 0) {
-              console.log(`📋 Processed ${processedHeaders}/${totalMessages} headers...`);
+              console.log(`[sync] processed ${processedHeaders}/${totalMessages} headers...`);
             }
           });
         });
@@ -601,24 +588,12 @@ class ImapSyncService {
     });
   }
 
-  async getExistingMessageIds(folder) {
+  getExistingMessageIds(folder) {
     try {
-      return new Promise((resolve, reject) => {
-        this.db.all(
-          'SELECT messageId FROM emails WHERE folder = ?',
-          [folder],
-          (err, rows) => {
-            if (err) {
-              console.warn(`⚠️ Could not get existing message IDs for folder ${folder}:`, err);
-              resolve(new Set());
-            } else {
-              resolve(new Set(rows.map(row => row.messageId)));
-            }
-          }
-        );
-      });
+      const rows = this.stmts.selectMessageIds.all(folder);
+      return new Set(rows.map(row => row.messageId));
     } catch (error) {
-      console.warn(`⚠️ Could not get existing message IDs for folder ${folder}:`, error);
+      console.warn(`[db] could not get existing message IDs for folder ${folder}:`, error.message);
       return new Set();
     }
   }
@@ -632,15 +607,15 @@ class ImapSyncService {
     return new Promise((resolve, reject) => {
       let processedCount = 0;
       const seqnoRange = seqnos.join(',');
-      
+
       // Add timeout for batch processing
       const batchTimeout = setTimeout(() => {
-        console.error(`⏰ Batch timeout after 60 seconds for messages ${seqnoRange}`);
+        console.error(`[sync] batch timeout after 60 seconds for messages ${seqnoRange}`);
         reject(new Error(`Batch processing timeout for messages ${seqnoRange}`));
       }, 60000); // 60 second timeout
-      
-      console.log(`🔍 Fetching message range: ${seqnoRange}`);
-      
+
+      console.log(`[sync] fetching message range: ${seqnoRange}`);
+
       const fetch = this.imap.seq.fetch(seqnoRange, {
         bodies: '',
         struct: true,
@@ -649,17 +624,17 @@ class ImapSyncService {
       fetch.on('message', (msg, seqno) => {
         let buffer = Buffer.alloc(0);
         let attrs;
-        let messageStartTime = Date.now();
+        const messageStartTime = Date.now();
 
-        console.log(`📩 Processing message ${seqno}...`);
+        console.log(`[sync] processing message ${seqno}...`);
 
         msg.on('body', (stream) => {
           stream.on('data', (chunk) => {
             buffer = Buffer.concat([buffer, chunk]);
-            
+
             // Check for extremely large emails (> 50MB)
             if (buffer.length > 50 * 1024 * 1024) {
-              console.warn(`⚠️ Very large message ${seqno}: ${Math.round(buffer.length / (1024 * 1024))}MB`);
+              console.warn(`[sync] very large message ${seqno}: ${Math.round(buffer.length / (1024 * 1024))}MB`);
             }
           });
         });
@@ -671,30 +646,30 @@ class ImapSyncService {
         msg.once('end', async () => {
           try {
             const messageTime = Date.now() - messageStartTime;
-            console.log(`📧 Downloaded message ${seqno} (${Math.round(buffer.length / 1024)}KB in ${messageTime}ms)`);
-            
+            console.log(`[sync] downloaded message ${seqno} (${Math.round(buffer.length / 1024)}KB in ${messageTime}ms)`);
+
             const parsed = await simpleParser(buffer);
-            console.log(`🔍 Parsed message ${seqno}: ${parsed.subject || 'No subject'}`);
-            
+            console.log(`[sync] parsed message ${seqno}: ${parsed.subject || 'No subject'}`);
+
             const emailData = this.parseEmailData(parsed, folderName, attrs);
-            
+
             await this.saveEmail(emailData);
-            console.log(`💾 Saved message ${seqno} to database`);
-            
+            console.log(`[sync] saved message ${seqno} to database`);
+
             processedCount++;
             this.processedMessages++;
             this.totalNewMessages++;
-            
+
             if (processedCount === seqnos.length) {
               clearTimeout(batchTimeout);
-              console.log(`✅ Batch completed: ${processedCount}/${seqnos.length} messages`);
+              console.log(`[sync] batch completed: ${processedCount}/${seqnos.length} messages`);
               resolve(processedCount);
             }
           } catch (error) {
             this.errors.push(`Error processing message ${seqno}: ${error.message}`);
-            console.error(`❌ Error processing message ${seqno}:`, error.message);
+            console.error(`[sync] error processing message ${seqno}:`, error.message);
             processedCount++;
-            
+
             if (processedCount === seqnos.length) {
               clearTimeout(batchTimeout);
               resolve(processedCount);
@@ -706,23 +681,23 @@ class ImapSyncService {
       fetch.once('error', (err) => {
         clearTimeout(batchTimeout);
         this.errors.push(`Fetch error: ${err.message}`);
-        console.error(`❌ Fetch error for range ${seqnoRange}:`, err.message);
+        console.error(`[sync] fetch error for range ${seqnoRange}:`, err.message);
         reject(err);
       });
 
       fetch.once('end', () => {
-        console.log(`📥 Fetch completed for range ${seqnoRange}`);
+        console.log(`[sync] fetch completed for range ${seqnoRange}`);
       });
     });
   }
 
   parseEmailData(parsed, folder, attrs) {
     const messageId = parsed.messageId || `${Date.now()}-${Math.random()}`;
-    
+
     // Detect content type
     const hasHtml = parsed.html && parsed.html.trim().length > 0;
     const contentType = hasHtml ? 'HTML' : 'PLAIN';
-    
+
     // Process attachments
     const attachments = parsed.attachments?.map(att => ({
       filename: att.filename,
@@ -730,9 +705,9 @@ class ImapSyncService {
       size: att.size,
       content: att.content, // For saving to filesystem
     })) || [];
-    
+
     const hasAttachments = attachments.length > 0;
-    
+
     return {
       messageId,
       uid: attrs?.uid || null,
@@ -758,92 +733,86 @@ class ImapSyncService {
     try {
       const cuid = this.generateCuid();
       let attachmentsPath = null;
-      
+
       // Save attachments to filesystem if they exist
       if (emailData.hasAttachments && emailData.attachments.length > 0) {
         attachmentsPath = await this.saveAttachments(cuid, emailData.attachments);
       }
-      
-      return new Promise((resolve, reject) => {
-        const sql = `
-          INSERT OR REPLACE INTO emails (
-            id, messageId, uid, subject, fromAddress, fromName, toAddresses, 
-            bodyText, bodyHtml, contentType, hasAttachments, attachmentsPath,
-            attachments, folder, date, size, createdAt
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        `;
-        
-        const params = [
+
+      // Serialize attachments without the raw Buffer content to keep rows small.
+      // The original code stored the full JSON (including base64-like Buffer JSON);
+      // we preserve that behavior for compatibility.
+      const attachmentsJson = JSON.stringify(emailData.attachments || []);
+
+      try {
+        this.stmts.insertEmail.run(
           cuid,
           emailData.messageId,
           emailData.uid,
           emailData.subject,
           emailData.fromAddress,
           emailData.fromName,
-          JSON.stringify(emailData.toAddresses),
+          JSON.stringify(emailData.toAddresses || []),
+          JSON.stringify(emailData.ccAddresses || []),
+          JSON.stringify(emailData.bccAddresses || []),
           emailData.bodyText,
           emailData.bodyHtml,
           emailData.contentType,
           emailData.hasAttachments ? 1 : 0,
           attachmentsPath,
-          JSON.stringify(emailData.attachments || []),
+          attachmentsJson,
           emailData.folder,
+          JSON.stringify(emailData.flags || []),
           emailData.date.toISOString(),
           emailData.size
-        ];
-        
-        this.db.run(sql, params, (err) => {
-          if (err) {
-            console.error(`❌ Error saving email ${emailData.messageId}:`, err);
-            reject(err);
-          } else {
-            resolve();
-          }
-        });
-      });
+        );
+      } catch (err) {
+        console.error(`[db] error saving email ${emailData.messageId}:`, err.message);
+        throw err;
+      }
     } catch (error) {
-      console.error(`❌ Error saving email ${emailData.messageId}:`, error);
+      console.error(`[db] error saving email ${emailData.messageId}:`, error.message);
       throw error;
     }
   }
 
   async saveAttachments(emailId, attachments) {
-    const fs = require('fs').promises;
-    const path = require('path');
-    
+    const fsp = require('fs').promises;
+    const p = require('path');
+
     try {
       // Create attachments directory structure: {ATTACHMENTS_DIR}/{accountId}/{messageId}/
       const attachmentsBaseDir = process.env.ATTACHMENTS_DIR || './data/attachments';
-      const attachmentsDir = path.join(process.cwd(), attachmentsBaseDir, this.accountId, emailId);
-      
+      const attachmentsDir = p.join(process.cwd(), attachmentsBaseDir, this.accountId, emailId);
+
       // Ensure directory exists
-      await fs.mkdir(attachmentsDir, { recursive: true });
-      
+      await fsp.mkdir(attachmentsDir, { recursive: true });
+
       const savedFiles = [];
       for (const attachment of attachments) {
         if (!attachment.content || !attachment.filename) {
-          console.warn(`⚠️ Skipping attachment without content or filename`);
+          console.warn(`[attach] skipping attachment without content or filename`);
           continue;
         }
-        
+
         // Sanitize filename
         const sanitizedFilename = attachment.filename
           .replace(/[^a-zA-Z0-9.\-_]/g, '_')
           .replace(/_{2,}/g, '_')
           .substring(0, 100); // Limit length
-        
-        const filePath = path.join(attachmentsDir, sanitizedFilename);
-        
+
+        const filePath = p.join(attachmentsDir, sanitizedFilename);
+
         // Skip very large attachments (> 50MB)
         if (attachment.size > 50 * 1024 * 1024) {
-          console.warn(`⚠️ Skipping large attachment: ${sanitizedFilename} (${Math.round(attachment.size / (1024 * 1024))}MB)`);
+          console.warn(`[attach] skipping large attachment: ${sanitizedFilename} (${Math.round(attachment.size / (1024 * 1024))}MB)`);
           continue;
         }
-        
+
         // Save attachment to file
-        await fs.writeFile(filePath, attachment.content);
-        console.log(`💾 Saved attachment: ${sanitizedFilename} (${Math.round(attachment.size / 1024)}KB)`);
-        
+        await fsp.writeFile(filePath, attachment.content);
+        console.log(`[attach] saved attachment: ${sanitizedFilename} (${Math.round(attachment.size / 1024)}KB)`);
+
         savedFiles.push({
           originalName: attachment.filename,
           savedName: sanitizedFilename,
@@ -851,10 +820,10 @@ class ImapSyncService {
           contentType: attachment.contentType
         });
       }
-      
+
       return savedFiles.length > 0 ? attachmentsDir : null;
     } catch (error) {
-      console.error(`❌ Error saving attachments for email ${emailId}:`, error);
+      console.error(`[attach] error saving attachments for email ${emailId}:`, error.message);
       return null;
     }
   }
@@ -875,18 +844,18 @@ class ImapSyncService {
     try {
       await this.connect();
       await this.initializeAccountDatabase();
-      
+
       const folders = await this.getFolders();
-      console.log(`📁 Found ${folders.length} folders for incremental sync of account ${this.accountId}`);
+      console.log(`[sync] found ${folders.length} folders for incremental sync of account ${this.accountId}`);
 
       // Prioritize INBOX first for incremental sync
       const priorityFolders = ['INBOX'];
       const secondaryFolders = ['Sent', 'Drafts', 'Important', '[Gmail]/Sent Mail', '[Gmail]/Drafts'];
-      
+
       const sortedFolders = [
         ...folders.filter(f => priorityFolders.some(pf => f.toLowerCase() === pf.toLowerCase())),
         ...folders.filter(f => secondaryFolders.some(pf => f.toLowerCase().includes(pf.toLowerCase()))),
-        ...folders.filter(f => 
+        ...folders.filter(f =>
           !priorityFolders.some(pf => f.toLowerCase() === pf.toLowerCase()) &&
           !secondaryFolders.some(pf => f.toLowerCase().includes(pf.toLowerCase()))
         )
@@ -894,27 +863,27 @@ class ImapSyncService {
 
       for (const folder of sortedFolders) {
         try {
-          console.log(`\n🔄 Starting incremental sync for folder: ${folder}`);
+          console.log(`\n[sync] starting incremental sync for folder: ${folder}`);
           const messageCount = await this.syncFolder(folder);
-          console.log(`✅ Synced ${messageCount} new messages from folder ${folder}`);
-          
+          console.log(`[sync] synced ${messageCount} new messages from folder ${folder}`);
+
           // Progress summary after each folder
           const elapsed = Math.round((Date.now() - startTime) / 1000);
-          console.log(`📊 Progress: ${this.totalNewMessages} total new messages, ${Math.floor(elapsed / 60)}m ${elapsed % 60}s elapsed`);
-          
+          console.log(`[sync] progress: ${this.totalNewMessages} total new messages, ${Math.floor(elapsed / 60)}m ${elapsed % 60}s elapsed`);
+
           // Short delay between folders for incremental sync
           if (sortedFolders.indexOf(folder) < sortedFolders.length - 1) {
-            console.log(`⏸️  Waiting 1 second before next folder...`);
+            console.log(`[sync] waiting 1 second before next folder...`);
             await new Promise(resolve => setTimeout(resolve, 1000));
           }
-          
+
         } catch (error) {
           const errorMsg = `Failed to sync folder ${folder}: ${error.message}`;
           this.errors.push(errorMsg);
-          console.error(`❌ ${errorMsg}`);
-          
+          console.error(`[sync] ${errorMsg}`);
+
           if (this.errors.length >= this.maxErrors) {
-            console.error(`❌ Maximum errors reached (${this.maxErrors}). Stopping sync.`);
+            console.error(`[sync] maximum errors reached (${this.maxErrors}). Stopping sync.`);
             break;
           }
         }
@@ -922,16 +891,16 @@ class ImapSyncService {
 
     } catch (error) {
       this.errors.push(`Connection error: ${error.message}`);
-      console.error(`❌ IMAP incremental sync failed for account ${this.accountId}:`, error.message);
+      console.error(`[sync] IMAP incremental sync failed for account ${this.accountId}:`, error.message);
     } finally {
       await this.disconnect();
     }
 
     const totalTime = Math.round((Date.now() - startTime) / 1000);
-    console.log(`\n📊 Incremental sync completed in ${Math.floor(totalTime / 60)}m ${totalTime % 60}s`);
-    
-    return { 
-      totalMessages: this.totalNewMessages, 
+    console.log(`\n[sync] incremental sync completed in ${Math.floor(totalTime / 60)}m ${totalTime % 60}s`);
+
+    return {
+      totalMessages: this.totalNewMessages,
       errors: this.errors,
       timeElapsed: totalTime,
       processedMessages: this.processedMessages
@@ -947,18 +916,18 @@ class ImapSyncService {
     try {
       await this.connect();
       await this.initializeAccountDatabase();
-      
-      const folders = await this.getFolders();
-      console.log(`📁 Found ${folders.length} folders for full sync of account ${this.accountId}`);
 
-      // Prioritize INBOX first for large mailboxes  
+      const folders = await this.getFolders();
+      console.log(`[sync] found ${folders.length} folders for full sync of account ${this.accountId}`);
+
+      // Prioritize INBOX first for large mailboxes
       const priorityFolders = ['INBOX'];
       const secondaryFolders = ['Sent', 'Drafts', 'Important', '[Gmail]/Sent Mail', '[Gmail]/Drafts'];
-      
+
       const sortedFolders = [
         ...folders.filter(f => priorityFolders.some(pf => f.toLowerCase() === pf.toLowerCase())),
         ...folders.filter(f => secondaryFolders.some(pf => f.toLowerCase().includes(pf.toLowerCase()))),
-        ...folders.filter(f => 
+        ...folders.filter(f =>
           !priorityFolders.some(pf => f.toLowerCase() === pf.toLowerCase()) &&
           !secondaryFolders.some(pf => f.toLowerCase().includes(pf.toLowerCase()))
         )
@@ -966,27 +935,27 @@ class ImapSyncService {
 
       for (const folder of sortedFolders) {
         try {
-          console.log(`\n🔄 Starting full sync for folder: ${folder}`);
+          console.log(`\n[sync] starting full sync for folder: ${folder}`);
           const messageCount = await this.syncFolder(folder);
-          console.log(`✅ Synced ${messageCount} messages from folder ${folder}`);
-          
+          console.log(`[sync] synced ${messageCount} messages from folder ${folder}`);
+
           // Progress summary after each folder
           const elapsed = Math.round((Date.now() - startTime) / 1000);
-          console.log(`📊 Progress: ${this.totalNewMessages} total new messages, ${Math.floor(elapsed / 60)}m ${elapsed % 60}s elapsed`);
-          
+          console.log(`[sync] progress: ${this.totalNewMessages} total new messages, ${Math.floor(elapsed / 60)}m ${elapsed % 60}s elapsed`);
+
           // Longer delay between folders for Gmail
           if (sortedFolders.indexOf(folder) < sortedFolders.length - 1) {
-            console.log(`⏸️  Waiting 3 seconds before next folder...`);
+            console.log(`[sync] waiting 3 seconds before next folder...`);
             await new Promise(resolve => setTimeout(resolve, 3000));
           }
-          
+
         } catch (error) {
           const errorMsg = `Failed to sync folder ${folder}: ${error.message}`;
           this.errors.push(errorMsg);
-          console.error(`❌ ${errorMsg}`);
-          
+          console.error(`[sync] ${errorMsg}`);
+
           if (this.errors.length >= this.maxErrors) {
-            console.error(`❌ Maximum errors reached (${this.maxErrors}). Stopping sync.`);
+            console.error(`[sync] maximum errors reached (${this.maxErrors}). Stopping sync.`);
             break;
           }
         }
@@ -994,16 +963,16 @@ class ImapSyncService {
 
     } catch (error) {
       this.errors.push(`Connection error: ${error.message}`);
-      console.error(`❌ IMAP full sync failed for account ${this.accountId}:`, error.message);
+      console.error(`[sync] IMAP full sync failed for account ${this.accountId}:`, error.message);
     } finally {
       await this.disconnect();
     }
 
     const totalTime = Math.round((Date.now() - startTime) / 1000);
-    console.log(`\n📊 Full sync completed in ${Math.floor(totalTime / 60)}m ${totalTime % 60}s`);
-    
-    return { 
-      totalMessages: this.totalNewMessages, 
+    console.log(`\n[sync] full sync completed in ${Math.floor(totalTime / 60)}m ${totalTime % 60}s`);
+
+    return {
+      totalMessages: this.totalNewMessages,
       errors: this.errors,
       timeElapsed: totalTime,
       processedMessages: this.processedMessages
@@ -1011,4 +980,4 @@ class ImapSyncService {
   }
 }
 
-module.exports = { ImapSyncService }; 
+module.exports = { ImapSyncService };

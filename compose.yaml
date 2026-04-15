@@ -12,8 +12,8 @@ services:
     environment:
       - NODE_ENV=production
       - NEXTAUTH_URL=http://localhost:3000
-      - NEXTAUTH_SECRET=your-secret-key-here-change-this-in-production
-      - DATABASE_URL=file:../data/database/main.db
+      - AUTH_SECRET=your-secret-key-here-change-this-in-production
+      - DATABASE_URL=file:./data/database/main.db
       - DATA_DIR=./data/accounts
       - ATTACHMENTS_DIR=./data/attachments
       - SYNC_INTERVAL_MINUTES=30
@@ -35,7 +35,7 @@ services:
     container_name: mail-vault-sync
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=file:../data/database/main.db
+      - DATABASE_URL=file:./data/database/main.db
       - DATA_DIR=./data/accounts
       - ATTACHMENTS_DIR=./data/attachments
       - SYNC_INTERVAL_MINUTES=30

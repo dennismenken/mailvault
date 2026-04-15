@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { PrismaClient } from '@/generated/prisma';
+import { createAccountPrismaClient } from '@/lib/prisma-factory';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -14,12 +13,26 @@ interface AttachmentInfo {
   downloadUrl: string;
 }
 
+interface AttachmentMetadata {
+  filename?: string;
+  originalName?: string;
+  savedName?: string;
+  contentType?: string;
+  size?: number;
+}
+
+interface EmailAttachmentRow {
+  attachmentsPath: string | null;
+  hasAttachments: number | null;
+  attachments: string | null;
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ emailId: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
+    const session = await auth();
     
     if (!session?.user?.id) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
@@ -42,21 +55,15 @@ export async function GET(
     // Search for the email in all account databases
     let emailFound = false;
     let attachmentPath: string | null = null;
-    let attachmentsMetadata: any[] = [];
+    let attachmentsMetadata: AttachmentMetadata[] = [];
 
     for (const account of userAccounts) {
       try {
-        const absoluteDbPath = account.dbPath.startsWith('/') 
-          ? account.dbPath 
+        const absoluteDbPath = account.dbPath.startsWith('/')
+          ? account.dbPath
           : path.resolve(process.cwd(), account.dbPath);
 
-        const accountPrisma = new PrismaClient({
-          datasources: {
-            db: {
-              url: `file:${absoluteDbPath}`,
-            },
-          },
-        });
+        const accountPrisma = createAccountPrismaClient(absoluteDbPath);
 
         // Find the email with attachments
         const emailQuery = `
@@ -65,7 +72,7 @@ export async function GET(
           WHERE id = ? AND hasAttachments = 1
         `;
 
-        const emailResult = await accountPrisma.$queryRawUnsafe<any[]>(emailQuery, emailId);
+        const emailResult = await accountPrisma.$queryRawUnsafe<EmailAttachmentRow[]>(emailQuery, emailId);
         
         if (emailResult.length > 0 && emailResult[0].attachmentsPath) {
           emailFound = true;

@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { PrismaClient } from '@/generated/prisma';
+import { createAccountPrismaClient } from '@/lib/prisma-factory';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -11,7 +10,7 @@ export async function GET(
   { params }: { params: Promise<{ emailId: string; filename: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
+    const session = await auth();
     
     if (!session?.user?.id) {
       return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
@@ -37,17 +36,11 @@ export async function GET(
 
     for (const account of userAccounts) {
       try {
-        const absoluteDbPath = account.dbPath.startsWith('/') 
-          ? account.dbPath 
+        const absoluteDbPath = account.dbPath.startsWith('/')
+          ? account.dbPath
           : path.resolve(process.cwd(), account.dbPath);
 
-        const accountPrisma = new PrismaClient({
-          datasources: {
-            db: {
-              url: `file:${absoluteDbPath}`,
-            },
-          },
-        });
+        const accountPrisma = createAccountPrismaClient(absoluteDbPath);
 
         // Find the email with attachments
         const emailQuery = `
@@ -56,7 +49,7 @@ export async function GET(
           WHERE id = ? AND hasAttachments = 1
         `;
 
-        const emailResult = await accountPrisma.$queryRawUnsafe<any[]>(emailQuery, emailId);
+        const emailResult = await accountPrisma.$queryRawUnsafe<{ attachmentsPath: string | null }[]>(emailQuery, emailId);
         
         if (emailResult.length > 0 && emailResult[0].attachmentsPath) {
           emailFound = true;

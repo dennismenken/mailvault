@@ -1,10 +1,10 @@
 # Mail Vault
 
-A secure, self-hosted email management system built with Next.js 15, Prisma, and IMAP synchronization.
+A secure, self-hosted email management system built with Next.js 16, Prisma 7, and IMAP synchronization.
 
 ## Features
 
-- 🔐 **Secure Authentication** - NextAuth.js with credential-based login
+- 🔐 **Secure Authentication** - Auth.js v5 with credential-based login
 - 📧 **Multi-Account IMAP Sync** - Support for multiple email accounts
 - 📎 **Attachment Management** - Download and manage email attachments
 - 🔍 **Advanced Search** - Full-text search across all emails
@@ -36,7 +36,7 @@ A secure, self-hosted email management system built with Next.js 15, Prisma, and
 3. **Configure your environment**
    Edit `.env` and set your values:
    ```env
-   NEXTAUTH_SECRET=your-super-secret-key-change-this
+   AUTH_SECRET=your-super-secret-key-change-this
    NEXTAUTH_URL=http://localhost:3000
    ```
 
@@ -57,10 +57,10 @@ npm run dev
 
 ```bash
 # Start with Docker Compose
-docker-compose up -d
+docker compose up -d
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 ```
 
 ## Configuration
@@ -72,7 +72,7 @@ docker-compose logs -f
 | `NODE_ENV` | Environment mode | `development` |
 | `PORT` | Application port | `3000` |
 | `NEXTAUTH_URL` | Application URL | `http://localhost:3000` |
-| `NEXTAUTH_SECRET` | NextAuth secret key | *required* |
+| `AUTH_SECRET` | Auth.js v5 secret key (legacy `NEXTAUTH_SECRET` still honored) | *required* |
 | `DATABASE_URL` | Main database path | `file:./data/database/main.db` |
 | `DATA_DIR` | Account databases directory | `./data/accounts` |
 | `ATTACHMENTS_DIR` | Attachment storage directory | `./data/attachments` |
@@ -95,9 +95,8 @@ data/
 
 ### Database Notes
 
-- **Prisma Commands**: When running Prisma commands from the `prisma/` directory, temporarily set `DATABASE_URL=file:../data/database/main.db`
-- **Application Runtime**: The app uses `DATABASE_URL=file:./data/database/main.db` from the root directory
-- **Docker**: Uses the same paths as application runtime since everything runs from `/app`
+- **`DATABASE_URL`**: Use `file:./data/database/main.db` from the project root. With Prisma 7 and the better-sqlite3 driver adapter, relative paths resolve against the process working directory (project root for the app, `/app` in Docker), so a single URL works for CLI commands and the application runtime.
+- **Docker**: Same value; the `./data` volume is mounted at `/app/data`.
 
 ## Usage
 
@@ -187,14 +186,14 @@ tail -f logs/app.log
 
 ```bash
 # Start services
-docker-compose up -d
+docker compose up -d
 
 # View logs
-docker-compose logs -f web
-docker-compose logs -f sync
+docker compose logs -f web
+docker compose logs -f sync
 
 # Stop services
-docker-compose down
+docker compose down
 ```
 
 ### Manual Docker Build
@@ -245,7 +244,7 @@ docker run -d \
 ### Logs
 
 - Application logs: `logs/app.log`
-- Docker logs: `docker-compose logs`
+- Docker logs: `docker compose logs`
 - Database logs: Check SQLite journal files
 
 ## Contributing

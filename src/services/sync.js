@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-const { PrismaClient } = require('../generated/prisma');
+const { createMainPrismaClient } = require('../lib/prisma-factory');
 const { ImapSyncService } = require('./imap-sync');
 
-const prisma = new PrismaClient();
+const prisma = createMainPrismaClient();
 
 async function syncImapAccount(accountId, useIncrementalSync = true) {
   // Get the account from database

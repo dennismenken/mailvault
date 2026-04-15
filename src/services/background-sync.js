@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-const { PrismaClient } = require('../generated/prisma');
+const { createMainPrismaClient } = require('../lib/prisma-factory');
 const { ImapSyncService } = require('./imap-sync');
 
 class BackgroundSyncService {
   constructor() {
-    this.prisma = new PrismaClient();
+    this.prisma = createMainPrismaClient();
     this.syncInterval = (parseInt(process.env.SYNC_INTERVAL_MINUTES) || 30) * 60 * 1000; // Convert to milliseconds
     this.isRunning = false;
     this.syncTimeouts = new Map();

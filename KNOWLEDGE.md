@@ -358,7 +358,7 @@ npm run dev
 ### Environment Variables
 ```env
 # Required
-NEXTAUTH_SECRET=your-secret-key-here
+AUTH_SECRET=your-secret-key-here
 NEXTAUTH_URL=http://localhost:3000
 DATABASE_URL=file:./data/main.db
 
@@ -435,7 +435,7 @@ tail -f logs/sync.log
 - **Network**: Stable internet connection
 
 ### Security Checklist
-- [ ] Change default NEXTAUTH_SECRET
+- [ ] Change default AUTH_SECRET
 - [ ] Use strong database passwords
 - [ ] Enable TLS for all IMAP connections
 - [ ] Regular backup schedule
@@ -447,6 +447,45 @@ tail -f logs/sync.log
 - **Log Rotation**: Configure log rotation for long-term operation
 - **Backup Strategy**: Automated daily backups recommended
 - **Performance Monitoring**: Track sync times and error rates
+
+### Known Data Gaps in Legacy Rows
+
+Email rows archived before the sync service started persisting `ccAddresses`,
+`bccAddresses`, and `flags` keep those columns as `NULL`. New messages and
+re-inserted rows (i.e. messages whose `messageId` is not yet in the DB) populate
+them via the UPSERT in `src/services/imap-sync.js`.
+
+There is currently **no automatic backfill** for legacy rows. The sync logic
+skips messages whose `messageId` is already in the account database
+(`getNewMessagesFullCheck` in `src/services/imap-sync.js`), so clearing the
+`sync_state` alone will not re-hydrate the missing columns on historical rows.
+
+If backfilling becomes necessary, the options are:
+
+1. Destructive: delete affected rows (`DELETE FROM emails WHERE ccAddresses IS NULL OR flags IS NULL`)
+   and let the next sync re-archive them. This orphans any stored attachment
+   files on disk because a new `id` (cuid) is generated on re-insert.
+2. Targeted: implement an IMAP `UID FETCH HEADER.FIELDS (Cc Bcc)` + `FLAGS`
+   pass that updates matching `messageId`s without re-fetching bodies. Not
+   implemented as of this note.
+
+Neither option is wired up yet; both are dedicated features, not a one-line CLI
+switch. The legacy rows are safe to keep as-is for day-to-day usage — the gap
+only affects CC/BCC/flag-based search on old messages.
+
+### Cursor Reset for Wedged Sync
+
+When IMAP `UIDVALIDITY` rotates (rare, but happens on mailbox recreation or
+some provider maintenance windows), incremental sync can stop finding new
+mail. Clear the folder cursors and let the sync service re-derive them:
+
+```bash
+npm run cli -- reset-sync-state --account-id <id>
+```
+
+This wipes the `sync_state` table in the account's SQLite database and resets
+`lastSyncAt`/`errorCount`. It does not delete any archived messages and does
+not trigger a re-fetch of existing rows.
 
 ---
 

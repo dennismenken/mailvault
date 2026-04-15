@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Search, Mail, User, Settings, LogOut, Plus, Calendar, Filter, Users, Server, CheckCircle, XCircle, Clock, AlertTriangle, ChevronLeft, ChevronRight, Download } from 'lucide-react';
+import { Search, Mail, User, Settings, LogOut, Plus, Users, Server, CheckCircle, XCircle, Clock, AlertTriangle, ChevronLeft, ChevronRight, Download } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface EmailResult {
@@ -117,6 +117,7 @@ export default function DashboardPage() {
       loadUsers();
       loadImapAccounts();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
   // Email search functions
@@ -178,6 +179,7 @@ export default function DashboardPage() {
         toast.error(error.message || 'Failed to create user');
       }
     } catch (error) {
+      console.error('Failed to create user:', error);
       toast.error('Failed to create user');
     }
   };
@@ -220,6 +222,7 @@ export default function DashboardPage() {
         toast.error(error.message || 'Failed to create IMAP account');
       }
     } catch (error) {
+      console.error('Failed to create IMAP account:', error);
       toast.error('Failed to create IMAP account');
     }
   };
