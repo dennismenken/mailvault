@@ -1,276 +1,144 @@
 # Mail Vault
 
-A secure, self-hosted email management system built with Next.js 16, Prisma 7, and IMAP synchronization.
+Self-hosted IMAP archive and search for arbitrary mail accounts. Emails are synchronised into per-account SQLite databases, attachments land on disk, and a Next.js front end provides auth, search, filtering and download.
 
-## Features
+## Stack
 
-- 🔐 **Secure Authentication** - Auth.js v5 with credential-based login
-- 📧 **Multi-Account IMAP Sync** - Support for multiple email accounts
-- 📎 **Attachment Management** - Download and manage email attachments
-- 🔍 **Advanced Search** - Full-text search across all emails
-- 📱 **Responsive Design** - Modern UI that works on all devices
-- 🐳 **Docker Ready** - Easy deployment with Docker Compose
-- 🔄 **Background Sync** - Automatic email synchronization
-- 🗄️ **SQLite Storage** - Lightweight, file-based database
+- Next.js 16 (App Router, Turbopack), React 19, TypeScript
+- Auth.js v5 (credentials provider, JWT sessions)
+- Prisma 7 with the `@prisma/adapter-better-sqlite3` driver adapter
+- `node-imap` + `mailparser` for IMAP fetch and MIME parsing
+- `better-sqlite3` for account databases, WAL mode
+- `node-cron` scheduled sync with manual-trigger HTTP endpoint
+- Packaged as two Docker images: `web` (Next.js) and `sync` (background worker)
 
-## Quick Start
+## Requirements
 
-### Prerequisites
+- Node.js 22 (or Docker with the shipped `node:22-alpine` base)
+- A writable data directory (SQLite files and attachment storage)
 
-- Node.js 18+ or Docker
-- Git
+## Deployment
 
-### Installation
-
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd mail-vault
-   ```
-
-2. **Set up environment**
-   ```bash
-   cp docker.env.example .env
-   ```
-
-3. **Configure your environment**
-   Edit `.env` and set your values:
-   ```env
-   AUTH_SECRET=your-super-secret-key-change-this
-   NEXTAUTH_URL=http://localhost:3000
-   ```
-
-### Development
+Docker Compose is the supported deployment path.
 
 ```bash
-# Install dependencies
-npm install
-
-# Set up database
-npm run db:migrate
-
-# Start development server
-npm run dev
-```
-
-### Production (Docker)
-
-```bash
-# Start with Docker Compose
+cp docker.env.example .env
+# edit .env: set AUTH_SECRET, DATABASE_URL, SYNC_TRIGGER_TOKEN
 docker compose up -d
-
-# View logs
 docker compose logs -f
 ```
 
-### Create the Initial User
+Migrations run automatically on both containers. `web` applies Prisma migrations for the main database; `sync` additionally upgrades the per-account SQLite files via `scripts/migrate-account-databases.js`.
 
-There are no default credentials. After the containers are up, create the
-first user via the CLI. The command refuses to run if a user already exists,
-so it is safe to invoke once per fresh deployment.
+### Create the initial user
+
+There is no default account. After the stack is up, create one user from the CLI. The command refuses to run a second time.
 
 ```bash
-# Local dev
-npm run create-initial-user <email> <password> "Optional Name"
-
 # Docker
 docker compose exec web node scripts/cli.js create-initial-user <email> <password> "Optional Name"
+
+# Local
+npm run create-initial-user <email> <password> "Optional Name"
 ```
 
-Further accounts are managed from the web UI after login.
+Further users and IMAP accounts are managed from the web UI after login.
+
+### Behind a reverse proxy
+
+```yaml
+# compose.yaml
+services:
+  web:
+    ports: []
+    expose:
+      - "3000"
+```
+
+```env
+# .env
+AUTH_URL=https://mailvault.example.com
+AUTH_TRUST_HOST=true
+```
 
 ## Configuration
 
-### Environment Variables
+All variables are read from `.env` (mounted into both containers).
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `NODE_ENV` | Environment mode | `development` |
-| `PORT` | Application port | `3000` |
-| `NEXTAUTH_URL` | Application URL | `http://localhost:3000` |
-| `AUTH_SECRET` | Auth.js v5 secret key (legacy `NEXTAUTH_SECRET` still honored) | *required* |
-| `DATABASE_URL` | Main database path | `file:./data/database/main.db` |
-| `DATA_DIR` | Account databases directory | `./data/accounts` |
-| `ATTACHMENTS_DIR` | Attachment storage directory | `./data/attachments` |
-| `SYNC_INTERVAL_MINUTES` | Background sync interval | `30` |
-| `MAX_SYNC_ERRORS` | Max sync errors before disabling | `5` |
-| `LOG_LEVEL` | Logging level | `info` |
-
-### Directory Structure
-
-```
-data/
-├── database/
-│   └── main.db              # Main application database
-├── accounts/
-│   └── {accountId}.db       # Individual account databases
-└── attachments/
-    └── {accountId}/
-        └── {emailId}/       # Email attachments
-```
-
-### Database Notes
-
-- **`DATABASE_URL`**: Use `file:./data/database/main.db` from the project root. With Prisma 7 and the better-sqlite3 driver adapter, relative paths resolve against the process working directory (project root for the app, `/app` in Docker), so a single URL works for CLI commands and the application runtime.
-- **Docker**: Same value; the `./data` volume is mounted at `/app/data`.
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `AUTH_SECRET` | Auth.js session secret. Legacy `NEXTAUTH_SECRET` still accepted. | required |
+| `AUTH_URL` | Public URL of the web app. | `http://localhost:3000` |
+| `DATABASE_URL` | Main SQLite DB. Relative paths resolve against the process CWD. | `file:./data/database/main.db` |
+| `DATA_DIR` | Directory used when creating new account databases. | `./data/accounts` |
+| `ATTACHMENTS_DIR` | Root for attachment storage. | `./data/attachments` |
+| `SYNC_INTERVAL_MINUTES` | Cron cadence for the background sync. | `30` |
+| `MAX_SYNC_ERRORS` | Soft-error retries before an account is disabled. | `5` |
+| `SYNC_SERVICE_URL` | Web container uses this to call the sync service. | `http://sync:3001` |
+| `SYNC_TRIGGER_TOKEN` | Shared secret for the internal trigger API. | required when set |
+| `SYNC_HTTP_HOST` / `SYNC_HTTP_PORT` | Sync service HTTP bind. | `0.0.0.0` / `3001` |
+| `SYNC_BATCH_SIZE` / `SYNC_BATCH_DELAY` | Per-batch tuning for Gmail-friendly fetches. | `5` / `1000` |
+| `LOG_LEVEL` | `info` by default. | `info` |
 
 ## Usage
 
-### Adding Email Accounts
+1. Log in with the initial user.
+2. Add an IMAP account from the UI. Credentials are stored in the main database. The next sync cycle picks it up automatically.
+3. Search from the dashboard. Results are aggregated across all active accounts owned by the calling user, paginated at 20 per page.
+4. Attachments can be downloaded from the email detail view.
 
-1. Log in to the application
-2. Navigate to Settings → Email Accounts
-3. Click "Add Account"
-4. Enter your IMAP credentials:
-   - Email address
-   - IMAP server (e.g., `imap.gmail.com`)
-   - Port (usually 993 for SSL)
-   - Username and password
-5. Save and enable synchronization
+### Manual sync
 
-### Managing Attachments
-
-- Attachments are automatically detected during sync
-- Click the attachment icon in the email list to view attachments
-- Download individual attachments or view attachment details
-- Attachments are stored securely in the filesystem
-
-### Search and Filtering
-
-- Use the search bar to find emails by subject, sender, or content
-- Filter by account, folder, or attachment status
-- Advanced search supports multiple criteria
-
-## API Endpoints
-
-### Authentication
-- `POST /api/auth/signin` - User login
-- `POST /api/auth/signout` - User logout
-
-### Email Management
-- `GET /api/emails` - List emails with filtering
-- `GET /api/emails/[id]` - Get specific email
-
-### Attachments
-- `GET /api/attachments/[emailId]` - List email attachments
-- `GET /api/attachments/[emailId]/[filename]` - Download attachment
-
-### Account Management
-- `GET /api/accounts` - List IMAP accounts
-- `POST /api/accounts` - Create IMAP account
-- `PUT /api/accounts/[id]` - Update IMAP account
-- `DELETE /api/accounts/[id]` - Delete IMAP account
-
-## Development
-
-### Database Migrations
+The sync service exposes an internal API consumed by the web container:
 
 ```bash
-# Create new migration
-npx prisma migrate dev --name migration-name
+# From the web container, trigger a sync of a specific account.
+curl -X POST http://localhost:3000/api/sync/trigger \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"accountId":"<id>"}'
 
-# Apply migrations
-npx prisma migrate deploy
+# Or all accounts of the caller.
+curl -X POST http://localhost:3000/api/sync/trigger -b cookies.txt -d '{}'
 
-# Reset database (development only)
-npx prisma migrate reset
+# Current cycle state (authenticated caller).
+curl -s http://localhost:3000/api/sync/trigger -b cookies.txt
 ```
 
-### Manual Sync
+The endpoint requires a valid session and scopes `accountId` to the caller. Unreachable sync service returns HTTP 502.
+
+## Operations
 
 ```bash
-# Run one-time sync
-node src/services/sync.js
-
-# Start background sync service
-node src/services/start-background-sync.js
-```
-
-### Debugging
-
-```bash
-# View database content
-npx prisma studio
-
-# Check logs
-tail -f logs/app.log
-```
-
-## Docker Deployment
-
-### Using Docker Compose (Recommended)
-
-```bash
-# Start services
-docker compose up -d
-
-# View logs
+# Logs
 docker compose logs -f web
 docker compose logs -f sync
 
-# Stop services
+# Status snapshot
+docker compose exec web node scripts/cli.js status
+
+# Force a full resync cursor reset after an IMAP UIDVALIDITY change
+docker compose exec web node scripts/cli.js reset-sync-state --account-id <id>
+
+# Backup and restore
 docker compose down
+tar -czf mail-vault-$(date +%F).tar.gz data/
+docker compose up -d
 ```
 
-### Manual Docker Build
-
-```bash
-# Build web service
-docker build -f Dockerfile.web -t mail-vault-web .
-
-# Build sync service
-docker build -f Dockerfile.sync -t mail-vault-sync .
-
-# Run with volumes
-docker run -d \
-  -p 3000:3000 \
-  -v $(pwd)/data:/app/data \
-  -v $(pwd)/logs:/app/logs \
-  --env-file .env \
-  mail-vault-web
-```
-
-## Security
-
-- All passwords are hashed using bcrypt
-- IMAP credentials are encrypted in the database
-- File access is restricted to authenticated users
-- Attachment downloads include security checks
-- CSRF protection enabled
-- Secure session management
+Healthy log tags are `[sync]`, `[imap]`, `[attach]`, `[db]`, `[migrate]`, `[entrypoint]`, `[sync-entrypoint]`. `[err]` indicates an actionable failure; auth failures disable the offending account immediately rather than burning retries against the IMAP server.
 
 ## Troubleshooting
 
-### Common Issues
+- **`DATABASE_URL is not set`** — the runtime fails fast. Confirm `.env` is mounted and non-empty.
+- **`no such column: ccAddresses`** — an account DB predates migration `003`. Run `docker compose exec sync node scripts/migrate-account-databases.js` once; the migration is idempotent.
+- **Sync disabled unexpectedly** — inspect `ImapAccount.errorMessage` via `node scripts/cli.js status`. Auth failures set `errorCount` to a sentinel value and flip `syncEnabled` off; rotate credentials and re-enable from the UI.
+- **Attachment download 404** — verify `attachmentsPath` on the row and the directory under `ATTACHMENTS_DIR/{accountId}/` exists.
 
-1. **Database locked errors**
-   - Ensure only one sync process is running
-   - Check file permissions on data directory
+## Backup discipline
 
-2. **IMAP connection failures**
-   - Verify server settings and credentials
-   - Check firewall and network connectivity
-   - Enable "Less secure app access" for Gmail
-
-3. **Attachment download issues**
-   - Verify file permissions
-   - Check available disk space
-   - Ensure attachment path exists
-
-### Logs
-
-- Application logs: `logs/app.log`
-- Docker logs: `docker compose logs`
-- Database logs: Check SQLite journal files
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+The main DB and every per-account DB live under `./data`. A crash-consistent snapshot is obtained by stopping both containers or by copying the SQLite WAL sidecars (`*-wal`, `*-shm`) together with the base files.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT. See `LICENSE`.
