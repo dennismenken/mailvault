@@ -63,6 +63,22 @@ docker compose up -d
 docker compose logs -f
 ```
 
+### Create the Initial User
+
+There are no default credentials. After the containers are up, create the
+first user via the CLI. The command refuses to run if a user already exists,
+so it is safe to invoke once per fresh deployment.
+
+```bash
+# Local dev
+npm run create-initial-user <email> <password> "Optional Name"
+
+# Docker
+docker compose exec web node scripts/cli.js create-initial-user <email> <password> "Optional Name"
+```
+
+Further accounts are managed from the web UI after login.
+
 ## Configuration
 
 ### Environment Variables
