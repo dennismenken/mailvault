@@ -108,8 +108,8 @@ export default function DashboardPage() {
     async (
       query: string,
       page: number,
-      filter: "all" | "attachments" = activeFilter,
-      account: string = accountFilter,
+      filter: "all" | "attachments",
+      account: string,
     ) => {
       setIsLoading(true);
       try {
@@ -134,7 +134,7 @@ export default function DashboardPage() {
         setIsLoading(false);
       }
     },
-    [activeFilter, accountFilter],
+    [],
   );
 
   const loadUsers = useCallback(async () => {
@@ -163,7 +163,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (session) {
-      handleSearch("", 1);
+      handleSearch("", 1, "all", "all");
       loadUsers();
       loadImapAccounts();
     }
@@ -302,12 +302,9 @@ export default function DashboardPage() {
   const onSearchKey = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
       setCurrentPage(1);
-      handleSearch(searchQuery, 1);
+      handleSearch(searchQuery, 1, activeFilter, accountFilter);
     }
   };
-
-  // Filters are applied server-side via query params; results come back pre-filtered.
-  const filteredResults = searchResults;
 
   const accountHealth = useMemo(() => {
     const total = imapAccounts.length;
@@ -400,7 +397,7 @@ export default function DashboardPage() {
               <Button
                 onClick={() => {
                   setCurrentPage(1);
-                  handleSearch(searchQuery, 1);
+                  handleSearch(searchQuery, 1, activeFilter, accountFilter);
                 }}
                 disabled={isLoading}
                 size="sm"
@@ -501,14 +498,14 @@ export default function DashboardPage() {
           {/* Results + detail split */}
           <div className="grid gap-5 lg:grid-cols-[minmax(0,_1fr)_minmax(0,_1.1fr)]">
             <ResultsList
-              results={filteredResults}
+              results={searchResults}
               isLoading={isLoading}
               totalCount={totalCount}
               currentPage={currentPage}
               totalPages={totalPages}
               onSelect={handleEmailClick}
               selectedId={selectedEmail?.id}
-              onPage={(p) => handleSearch(searchQuery, p)}
+              onPage={(p) => handleSearch(searchQuery, p, activeFilter, accountFilter)}
             />
             <DetailPane
               email={selectedEmail}

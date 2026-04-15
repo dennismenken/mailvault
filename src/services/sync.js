@@ -2,11 +2,92 @@
 
 const { createMainPrismaClient } = require('../lib/prisma-factory');
 const { ImapSyncService } = require('./imap-sync');
+const { classifyImapError } = require('./imap-errors');
 
 const prisma = createMainPrismaClient();
+const SOFT_ERROR_LIMIT = parseInt(process.env.MAX_SYNC_ERRORS || '5', 10);
+const HARD_ERROR_COUNT_SENTINEL = 9999;
+
+async function applySyncOutcome(account, result, fatal) {
+  if (fatal) {
+    const classification = classifyImapError(fatal);
+    if (classification.kind === 'auth') {
+      await prisma.imapAccount.update({
+        where: { id: account.id },
+        data: {
+          lastSyncAt: new Date(),
+          errorMessage: classification.message,
+          errorCount: HARD_ERROR_COUNT_SENTINEL,
+          syncEnabled: false,
+        },
+      });
+      console.error(`[sync] ${account.email}: disabled due to auth failure — ${classification.message}`);
+      return { auth: true };
+    }
+    const nextErrorCount = (account.errorCount || 0) + 1;
+    const exhausted = nextErrorCount >= SOFT_ERROR_LIMIT;
+    await prisma.imapAccount.update({
+      where: { id: account.id },
+      data: {
+        lastSyncAt: new Date(),
+        errorMessage: classification.message,
+        errorCount: nextErrorCount,
+        syncEnabled: !exhausted,
+      },
+    });
+    if (exhausted) {
+      console.warn(`[sync] ${account.email}: disabled after ${nextErrorCount} consecutive failures`);
+    }
+    return { auth: false };
+  }
+
+  const transportErrors = (result && result.errors) || [];
+  const authErrors = transportErrors
+    .map((message) => classifyImapError({ message }))
+    .filter((c) => c.kind === 'auth');
+
+  if (authErrors.length > 0) {
+    await prisma.imapAccount.update({
+      where: { id: account.id },
+      data: {
+        lastSyncAt: new Date(),
+        errorMessage: authErrors[0].message,
+        errorCount: HARD_ERROR_COUNT_SENTINEL,
+        syncEnabled: false,
+      },
+    });
+    console.error(`[sync] ${account.email}: disabled due to auth failure — ${authErrors[0].message}`);
+    return { auth: true };
+  }
+
+  if (transportErrors.length > 0) {
+    const message = transportErrors.join('; ').slice(0, 1000);
+    const nextErrorCount = (account.errorCount || 0) + 1;
+    const exhausted = nextErrorCount >= SOFT_ERROR_LIMIT;
+    await prisma.imapAccount.update({
+      where: { id: account.id },
+      data: {
+        lastSyncAt: new Date(),
+        errorMessage: message,
+        errorCount: nextErrorCount,
+        syncEnabled: !exhausted,
+      },
+    });
+    return { auth: false };
+  }
+
+  await prisma.imapAccount.update({
+    where: { id: account.id },
+    data: {
+      lastSyncAt: new Date(),
+      errorMessage: null,
+      errorCount: 0,
+    },
+  });
+  return { auth: false };
+}
 
 async function syncImapAccount(accountId, useIncrementalSync = true) {
-  // Get the account from database
   const account = await prisma.imapAccount.findUnique({
     where: { id: accountId },
     include: {
@@ -24,7 +105,6 @@ async function syncImapAccount(accountId, useIncrementalSync = true) {
     throw new Error(`IMAP account with ID ${accountId} not found`);
   }
 
-  // Create sync service
   const syncService = new ImapSyncService({
     host: account.imapServer,
     port: account.imapPort,
@@ -35,11 +115,22 @@ async function syncImapAccount(accountId, useIncrementalSync = true) {
     dbPath: account.dbPath,
   });
 
-  // Perform sync - use incremental by default for performance
-  const result = useIncrementalSync 
-    ? await syncService.incrementalSync() 
-    : await syncService.fullSync();
-  
+  let result;
+  let fatal;
+  try {
+    result = useIncrementalSync
+      ? await syncService.incrementalSync()
+      : await syncService.fullSync();
+  } catch (error) {
+    fatal = error;
+  }
+
+  await applySyncOutcome(account, result, fatal);
+
+  if (fatal) {
+    throw fatal;
+  }
+
   return {
     newEmails: result.totalMessages,
     totalEmails: result.totalMessages,
