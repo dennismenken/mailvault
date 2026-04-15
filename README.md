@@ -14,7 +14,7 @@ Self-hosted IMAP archive and search for arbitrary mail accounts. Emails are sync
 
 ## Requirements
 
-- Node.js 22 (or Docker with the shipped `node:22-alpine` base)
+- Node.js 24 LTS (or Docker with the shipped `node:24-alpine` base)
 - A writable data directory (SQLite files and attachment storage)
 
 ## Deployment

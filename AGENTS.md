@@ -38,7 +38,7 @@ Dockerfile.sync          Background worker image
 
 ## Toolchain
 
-- Node 22 (engines in `package.json`).
+- Node 24 LTS (engines in `package.json`).
 - Package manager: `npm`. Do not introduce `yarn`, `pnpm`, `bun`.
 - TypeScript is strict. Next 16 build runs with `ignoreBuildErrors: true` for historical reasons, so rely on `tsc --noEmit` to catch type errors.
 - ESLint flat config in `eslint.config.mjs`. `src/generated/**` and `.js` service files have targeted overrides; do not remove them.
