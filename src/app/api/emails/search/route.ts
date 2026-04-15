@@ -99,7 +99,7 @@ export async function GET(request: NextRequest) {
         try {
           const absoluteDbPath = account.dbPath.startsWith('/')
             ? account.dbPath
-            : path.resolve(process.cwd(), account.dbPath);
+            : path.resolve(/*turbopackIgnore: true*/ process.cwd(), account.dbPath);
 
           const accountPrisma = createAccountPrismaClient(absoluteDbPath);
 
@@ -135,7 +135,7 @@ export async function GET(request: NextRequest) {
       try {
         const absoluteDbPath = account.dbPath.startsWith('/')
           ? account.dbPath
-          : path.resolve(process.cwd(), account.dbPath);
+          : path.resolve(/*turbopackIgnore: true*/ process.cwd(), account.dbPath);
 
         const accountPrisma = createAccountPrismaClient(absoluteDbPath);
 
@@ -154,7 +154,7 @@ export async function GET(request: NextRequest) {
       try {
         const absoluteDbPath = account.dbPath.startsWith('/')
           ? account.dbPath
-          : path.resolve(process.cwd(), account.dbPath);
+          : path.resolve(/*turbopackIgnore: true*/ process.cwd(), account.dbPath);
 
         const accountPrisma = createAccountPrismaClient(absoluteDbPath);
 

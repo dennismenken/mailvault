@@ -22,7 +22,9 @@ function resolveSqlitePath(urlOrPath: string): string {
     return candidate;
   }
 
-  return path.resolve(process.cwd(), candidate);
+  // Dynamic runtime path; suppress Turbopack NFT tracer so it does not
+  // include the whole project root as a potential module dependency.
+  return path.resolve(/*turbopackIgnore: true*/ process.cwd(), candidate);
 }
 
 /**

@@ -61,7 +61,7 @@ export async function GET(
       try {
         const absoluteDbPath = account.dbPath.startsWith('/')
           ? account.dbPath
-          : path.resolve(process.cwd(), account.dbPath);
+          : path.resolve(/*turbopackIgnore: true*/ process.cwd(), account.dbPath);
 
         const accountPrisma = createAccountPrismaClient(absoluteDbPath);
 
@@ -105,11 +105,11 @@ export async function GET(
     const attachments: AttachmentInfo[] = [];
 
     try {
-      const files = await fs.readdir(attachmentPath);
-      
+      const files = await fs.readdir(/*turbopackIgnore: true*/ attachmentPath);
+
       for (const file of files) {
-        const filePath = path.join(attachmentPath, file);
-        const stats = await fs.stat(filePath);
+        const filePath = path.join(/*turbopackIgnore: true*/ attachmentPath, file);
+        const stats = await fs.stat(/*turbopackIgnore: true*/ filePath);
         
         if (stats.isFile()) {
           // Find metadata for this file

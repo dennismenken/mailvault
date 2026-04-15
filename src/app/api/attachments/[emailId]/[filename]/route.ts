@@ -38,7 +38,7 @@ export async function GET(
       try {
         const absoluteDbPath = account.dbPath.startsWith('/')
           ? account.dbPath
-          : path.resolve(process.cwd(), account.dbPath);
+          : path.resolve(/*turbopackIgnore: true*/ process.cwd(), account.dbPath);
 
         const accountPrisma = createAccountPrismaClient(absoluteDbPath);
 
@@ -71,24 +71,24 @@ export async function GET(
 
     // Sanitize filename to prevent path traversal
     const sanitizedFilename = filename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    const filePath = path.join(attachmentPath, sanitizedFilename);
+    const filePath = path.join(/*turbopackIgnore: true*/ attachmentPath, sanitizedFilename);
 
     // Verify file exists and is within the attachments directory
     try {
-      await fs.access(filePath);
-      
+      await fs.access(/*turbopackIgnore: true*/ filePath);
+
       // Security check: ensure file is within attachments directory
       const attachmentsBaseDir = process.env.ATTACHMENTS_DIR || './data/attachments';
-      const attachmentsDir = path.join(process.cwd(), attachmentsBaseDir);
-      const resolvedFilePath = path.resolve(filePath);
-      const resolvedAttachmentsDir = path.resolve(attachmentsDir);
-      
+      const attachmentsDir = path.join(/*turbopackIgnore: true*/ process.cwd(), attachmentsBaseDir);
+      const resolvedFilePath = path.resolve(/*turbopackIgnore: true*/ filePath);
+      const resolvedAttachmentsDir = path.resolve(/*turbopackIgnore: true*/ attachmentsDir);
+
       if (!resolvedFilePath.startsWith(resolvedAttachmentsDir)) {
         return NextResponse.json({ message: 'Access denied' }, { status: 403 });
       }
 
       // Read file
-      const fileBuffer = await fs.readFile(filePath);
+      const fileBuffer = await fs.readFile(/*turbopackIgnore: true*/ filePath);
       
       // Determine content type
       const ext = path.extname(sanitizedFilename).toLowerCase();
