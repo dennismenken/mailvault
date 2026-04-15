@@ -68,6 +68,23 @@ export const authConfig: NextAuthConfig = {
       return session;
     },
   },
+  logger: {
+    // CredentialsSignin is part of the normal failed-login flow (authorize()
+    // returned null). Auth.js logs it as error by default; downgrade to debug
+    // so production logs stay readable.
+    error(error) {
+      if (error?.name === 'CredentialsSignin') {
+        return;
+      }
+      console.error('[auth]', error);
+    },
+    warn(code) {
+      console.warn('[auth]', code);
+    },
+    debug() {
+      // noop in production; enable by replacing this with console.debug if needed.
+    },
+  },
 };
 
 export const { handlers, auth, signIn, signOut } = NextAuth(authConfig);
