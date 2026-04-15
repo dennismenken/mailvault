@@ -22,7 +22,7 @@ async function applySyncOutcome(account, result, fatal) {
         },
       });
       console.error(`[sync] ${account.email}: disabled due to auth failure — ${classification.message}`);
-      return { auth: true };
+      return { status: 'auth', disabled: true, message: classification.message };
     }
     const nextErrorCount = (account.errorCount || 0) + 1;
     const exhausted = nextErrorCount >= SOFT_ERROR_LIMIT;
@@ -38,7 +38,7 @@ async function applySyncOutcome(account, result, fatal) {
     if (exhausted) {
       console.warn(`[sync] ${account.email}: disabled after ${nextErrorCount} consecutive failures`);
     }
-    return { auth: false };
+    return { status: 'soft', disabled: exhausted, message: classification.message };
   }
 
   const transportErrors = (result && result.errors) || [];
@@ -57,7 +57,7 @@ async function applySyncOutcome(account, result, fatal) {
       },
     });
     console.error(`[sync] ${account.email}: disabled due to auth failure — ${authErrors[0].message}`);
-    return { auth: true };
+    return { status: 'auth', disabled: true, message: authErrors[0].message };
   }
 
   if (transportErrors.length > 0) {
@@ -73,7 +73,7 @@ async function applySyncOutcome(account, result, fatal) {
         syncEnabled: !exhausted,
       },
     });
-    return { auth: false };
+    return { status: 'soft', disabled: exhausted, message };
   }
 
   await prisma.imapAccount.update({
@@ -84,7 +84,7 @@ async function applySyncOutcome(account, result, fatal) {
       errorCount: 0,
     },
   });
-  return { auth: false };
+  return { status: 'ok', disabled: false };
 }
 
 async function syncImapAccount(accountId, useIncrementalSync = true) {
@@ -125,10 +125,13 @@ async function syncImapAccount(accountId, useIncrementalSync = true) {
     fatal = error;
   }
 
-  await applySyncOutcome(account, result, fatal);
+  const outcome = await applySyncOutcome(account, result, fatal);
 
   if (fatal) {
-    throw fatal;
+    const enriched = new Error(outcome.message || fatal.message || 'sync failed');
+    enriched.cause = fatal;
+    enriched.outcome = outcome;
+    throw enriched;
   }
 
   return {
@@ -136,7 +139,8 @@ async function syncImapAccount(accountId, useIncrementalSync = true) {
     totalEmails: result.totalMessages,
     errors: result.errors,
     timeElapsed: result.timeElapsed,
-    processedMessages: result.processedMessages
+    processedMessages: result.processedMessages,
+    outcome,
   };
 }
 
@@ -196,17 +200,18 @@ async function syncAllAccounts(forceFullSync = false) {
           account: account.email,
           user: account.user.email,
           success: true,
-          ...result
+          outcome: result.outcome,
+          ...result,
         });
-        
+
         totalProcessedMessages += result.processedMessages || 0;
         totalNewMessages += result.newEmails || 0;
-        
+
         console.log(`\n[ok] ACCOUNT SYNC COMPLETED: ${account.email}`);
         console.log(`   [sync] New emails: ${result.newEmails}`);
         console.log(`   [sync] Processed messages: ${result.processedMessages}`);
         console.log(`   [sync] Time elapsed: ${result.timeElapsed}s`);
-        
+
         if (result.errors && result.errors.length > 0) {
           console.log(`   [warn] ${result.errors.length} errors occurred:`);
           result.errors.slice(0, 5).forEach((error, idx) => {
@@ -216,16 +221,30 @@ async function syncAllAccounts(forceFullSync = false) {
             console.log(`      ... and ${result.errors.length - 5} more errors`);
           }
         }
-        
+
+        if (result.outcome && result.outcome.status === 'auth') {
+          console.log(`   [warn] auth failure detected — account disabled`);
+        } else if (result.outcome && result.outcome.disabled) {
+          console.log(`   [warn] soft-error threshold reached — account disabled`);
+        }
+
       } catch (error) {
+        const outcome = (error && error.outcome) || { status: 'soft', disabled: false };
+        const message = error instanceof Error ? error.message : 'Unknown error';
         console.log(`\n[err] ACCOUNT SYNC FAILED: ${account.email}`);
-        console.log(`   Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        
+        console.log(`   Error: ${message}`);
+        if (outcome.status === 'auth') {
+          console.log(`   [warn] auth failure — account disabled`);
+        } else if (outcome.disabled) {
+          console.log(`   [warn] soft-error threshold reached — account disabled`);
+        }
+
         results.push({
           account: account.email,
           user: account.user.email,
           success: false,
-          error: error instanceof Error ? error.message : 'Unknown error'
+          outcome,
+          error: message,
         });
       }
       
@@ -242,15 +261,23 @@ async function syncAllAccounts(forceFullSync = false) {
     console.log(`[sync] FINAL ${syncType.toUpperCase()} SYNCHRONIZATION SUMMARY`);
     console.log(`${'█'.repeat(80)}`);
     
-    const successful = results.filter(r => r.success);
-    const failed = results.filter(r => !r.success);
-    
+    const successful = results.filter((r) => r.success);
+    const failed = results.filter((r) => !r.success);
+    const authDisabled = results.filter(
+      (r) => r.outcome && r.outcome.status === 'auth',
+    );
+    const softDisabled = results.filter(
+      (r) => r.outcome && r.outcome.status === 'soft' && r.outcome.disabled,
+    );
+
     console.log(`[ok] Successful accounts: ${successful.length}`);
     console.log(`[err] Failed accounts: ${failed.length}`);
+    console.log(`[warn] Auth-disabled accounts: ${authDisabled.length}`);
+    console.log(`[warn] Soft-error-disabled accounts: ${softDisabled.length}`);
     console.log(`[sync] Total new emails synced: ${totalNewMessages}`);
     console.log(`[sync] Total messages processed: ${totalProcessedMessages}`);
     console.log(`[sync] Total time elapsed: ${Math.floor(totalTime / 60)}m ${totalTime % 60}s`);
-    
+
     if (totalNewMessages > 0) {
       const avgSpeed = Math.round(totalProcessedMessages / totalTime);
       console.log(`[sync] Average processing speed: ${avgSpeed} messages/second`);
@@ -268,6 +295,20 @@ async function syncAllAccounts(forceFullSync = false) {
       console.log(`\n[err] Failed accounts:`);
       failed.forEach((result, idx) => {
         console.log(`   ${idx + 1}. ${result.account} (${result.user}): ${result.error}`);
+      });
+    }
+
+    if (authDisabled.length > 0) {
+      console.log(`\n[warn] Accounts disabled due to IMAP auth failure (rotate credentials and re-enable):`);
+      authDisabled.forEach((result, idx) => {
+        console.log(`   ${idx + 1}. ${result.account} — ${result.outcome.message || result.error || 'auth rejected'}`);
+      });
+    }
+
+    if (softDisabled.length > 0) {
+      console.log(`\n[warn] Accounts disabled after hitting the soft-error threshold:`);
+      softDisabled.forEach((result, idx) => {
+        console.log(`   ${idx + 1}. ${result.account} — ${result.outcome.message || result.error || 'repeated transient failures'}`);
       });
     }
 
