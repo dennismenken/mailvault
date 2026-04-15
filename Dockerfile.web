@@ -48,7 +48,7 @@ COPY --from=deps /app/node_modules ./node_modules
 
 # Copy Prisma files and generated client (after node_modules)
 COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 COPY --from=builder /app/src/generated ./src/generated
 
 # Copy package.json for scripts

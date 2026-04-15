@@ -29,6 +29,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY src/services ./src/services
 COPY src/lib ./src/lib
 COPY prisma ./prisma
+COPY prisma.config.ts ./prisma.config.ts
 COPY package.json ./
 
 # Copy scripts for migrations

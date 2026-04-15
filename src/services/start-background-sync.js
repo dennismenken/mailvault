@@ -1,47 +1,51 @@
 #!/usr/bin/env node
+'use strict';
 
 const { BackgroundSyncService } = require('./background-sync');
 
 async function main() {
-  console.log('🚀 Mail Vault Background Sync Service');
-  console.log('=====================================');
-  
+  console.log('[sync] Mail Vault Background Sync Service');
+  console.log('=========================================');
+
   const service = new BackgroundSyncService();
-  
-  // Handle graceful shutdown
-  process.on('SIGINT', async () => {
-    console.log('\n🛑 Received shutdown signal...');
-    await service.stop();
+
+  const shutdown = async (signal) => {
+    console.log(`[sync] received ${signal}, shutting down...`);
+    try {
+      await service.stop();
+    } catch (error) {
+      console.error('[sync] shutdown error:', error.message);
+    }
     process.exit(0);
+  };
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  process.on('unhandledRejection', (reason) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    console.error('[sync] unhandled rejection:', message);
   });
-  
-  process.on('SIGTERM', async () => {
-    console.log('\n🛑 Received termination signal...');
-    await service.stop();
-    process.exit(0);
+
+  process.on('uncaughtException', (error) => {
+    console.error('[sync] uncaught exception:', error && error.message ? error.message : String(error));
   });
-  
-  try {
-    await service.start();
-    
-    // Keep process alive
-    setInterval(async () => {
+
+  await service.start();
+
+  setInterval(async () => {
+    try {
       const status = await service.getStatus();
-      console.log(`\n💤 Service Status: ${status.isRunning ? 'Running' : 'Idle'}`);
-      console.log(`📧 Active accounts: ${status.accounts.filter(a => a.isActive && a.syncEnabled).length}`);
-      
-      const nextSync = status.accounts.length > 0 ? 
-        Math.min(...status.accounts.map(a => a.nextSyncAt.getTime())) : 
-        Date.now() + status.syncInterval;
-      console.log(`⏰ Next sync: ${new Date(nextSync).toLocaleString()}`);
-    }, 5 * 60 * 1000); // Status update every 5 minutes
-    
-    console.log('\n💡 Press Ctrl+C to stop the service');
-    
-  } catch (error) {
-    console.error('❌ Failed to start background sync service:', error.message);
-    process.exit(1);
-  }
+      const active = status.accounts.filter((a) => a.isActive && a.syncEnabled).length;
+      const disabled = status.accounts.filter((a) => !a.syncEnabled).length;
+      console.log(`[sync] heartbeat: running=${status.isRunning}, inFlight=${status.cycleInFlight}, active=${active}, disabled=${disabled}`);
+    } catch (error) {
+      console.error('[sync] heartbeat failed:', error.message);
+    }
+  }, 5 * 60 * 1000);
 }
 
-main().catch(console.error); 
+main().catch((error) => {
+  console.error('[sync] failed to start:', error && error.message ? error.message : String(error));
+  process.exit(1);
+});
