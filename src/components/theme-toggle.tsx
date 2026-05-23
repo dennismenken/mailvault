@@ -17,6 +17,7 @@ export function ThemeToggle() {
   const { theme, setTheme, resolvedTheme } = useTheme();
   const [mounted, setMounted] = React.useState(false);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR-safe mount detection
   React.useEffect(() => setMounted(true), []);
 
   const active = mounted ? resolvedTheme : undefined;

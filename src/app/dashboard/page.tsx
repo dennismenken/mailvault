@@ -161,6 +161,7 @@ export default function DashboardPage() {
     }
   }, []);
 
+  /* eslint-disable react-hooks/set-state-in-effect -- initial fetch on session ready */
   useEffect(() => {
     if (session) {
       handleSearch("", 1, "all", "all");
@@ -169,6 +170,7 @@ export default function DashboardPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleCreateUser = async () => {
     try {
